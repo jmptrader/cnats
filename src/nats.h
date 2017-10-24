@@ -1,7 +1,11 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 #ifndef NATS_H_
 #define NATS_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #include <stdlib.h>
 #include <stdint.h>
@@ -33,10 +37,6 @@
 #else
   #define NATS_EXTERN
   typedef int         natsSock;
-#endif
-
-#ifdef __cplusplus
-extern "C" {
 #endif
 
 /*! \mainpage %NATS C client.
@@ -188,7 +188,7 @@ typedef natsStatus (*natsEvLoop_Attach)(
         void            **userData,
         void            *loop,
         natsConnection  *nc,
-        int             socket);
+        natsSock        socket);
 
 /** \brief Read event needs to be added or removed.
  *
@@ -376,6 +376,51 @@ nats_GetLastErrorStack(char *buffer, size_t bufLen);
 NATS_EXTERN void
 nats_PrintLastErrorStack(FILE *file);
 
+/** \brief Sets the maximum size of the global message delivery thread pool.
+ *
+ * Normally, each asynchronous subscriber that is created has its own
+ * message delivery thread. The advantage is that it reduces lock
+ * contentions, therefore improving performance.<br>
+ * However, if an application creates many subscribers, this is not scaling
+ * well since the process would use too many threads.
+ *
+ * The library has a thread pool that can perform message delivery. If
+ * a connection is created with the proper option set
+ * (#natsOptions_UseGlobalMessageDelivery), then this thread pool
+ * will be responsible for delivering the messages. The thread pool is
+ * lazily initialized, that is, no thread is used as long as no subscriber
+ * (requiring global message delivery) is created.
+ *
+ * Each subscriber will be attached to a given worker on the pool so that
+ * message delivery order is guaranteed.
+ *
+ * This call allows you to set the maximum size of the pool.
+ *
+ * \note At this time, a pool does not shrink, but the caller will not get
+ * an error when calling this function with a size smaller than the current
+ * size.
+ *
+ * @see natsOptions_UseGlobalMessageDelivery()
+ * @see \ref envVariablesGroup
+ *
+ * @param max the maximum size of the pool.
+ */
+NATS_EXTERN natsStatus
+nats_SetMessageDeliveryPoolSize(int max);
+
+/** \brief Release thread-local memory possibly allocated by the library.
+ *
+ * This needs to be called on user-created threads where NATS calls are
+ * performed. This does not need to be called in threads created by
+ * the library. For instance, do not call this function in the
+ * message handler that you specify when creating a subscription.
+ *
+ * Also, you do not need to call this in an user thread (or the main)
+ * if you are calling nats_Close() there.
+ */
+NATS_EXTERN void
+nats_ReleaseThreadMemory(void);
+
 /** \brief Tear down the library.
  *
  * Releases memory used by the library.
@@ -499,6 +544,10 @@ natsOptions_Create(natsOptions **newOpts);
  * - nats://user\@localhost:4222
  * - nats://user:password\@localhost:4222
  *
+ * @see natsOptions_SetServers
+ * @see natsOptions_SetUserInfo
+ * @see natsOptions_SetToken
+ *
  * @param opts the pointer to the #natsOptions object.
  * @param url the string representing the URL the connection should use
  * to connect to the server.
@@ -521,12 +570,71 @@ natsOptions_SetURL(natsOptions *opts, const char *url);
  * Note that if you call #natsOptions_SetURL() too, the actual list will contain
  * the one from #natsOptions_SetURL() and the ones specified in this call.
  *
+ * @see natsOptions_SetURL
+ * @see natsOptions_SetUserInfo
+ * @see natsOptions_SetToken
+ *
  * @param opts the pointer to the #natsOptions object.
  * @param servers the array of strings representing the server URLs.
  * @param serversCount the size of the array.
  */
 NATS_EXTERN natsStatus
 natsOptions_SetServers(natsOptions *opts, const char** servers, int serversCount);
+
+/** \brief Sets the user name/password to use when not specified in the URL.
+ *
+ * Credentials are usually provided through the URL in the form:
+ * <c>nats://foo:bar\@localhost:4222</c>.<br>
+ * Until now, you could specify URLs in two ways, with #natsOptions_SetServers
+ * or #natsConnection_ConnectTo. The client library would connect (or reconnect)
+ * only to this given list of URLs, so if any of the server in the list required
+ * authentication, you were responsible for providing the appropriate credentials
+ * in the URLs.<br>
+ * <br>
+ * However, with cluster auto-discovery, the client library asynchronously receives
+ * URLs of servers in the cluster. These URLs do not contain any embedded credentials.
+ * <br>
+ * You need to use this function (or #natsOptions_SetToken) to instruct the client
+ * library to use those credentials when connecting to a server that requires
+ * authentication and for which there is no embedded credentials in the URL.
+ *
+ * @see natsOptions_SetToken
+ * @see natsOptions_SetURL
+ * @see natsOptions_SetServers
+ *
+ * @param opts the pointer to the #natsOptions object.
+ * @param user the user name to send to the server during connect.
+ * @param password the password to send to the server during connect.
+ */
+NATS_EXTERN natsStatus
+natsOptions_SetUserInfo(natsOptions *opts, const char *user, const char *password);
+
+/** \brief Sets the token to use when not specified in the URL.
+ *
+ * Tokens are usually provided through the URL in the form:
+ * <c>nats://mytoken\@localhost:4222</c>.<br>
+ * Until now, you could specify URLs in two ways, with #natsOptions_SetServers
+ * or #natsConnection_ConnectTo. The client library would connect (or reconnect)
+ * only to this given list of URLs, so if any of the server in the list required
+ * authentication, you were responsible for providing the appropriate token
+ * in the URLs.<br>
+ * <br>
+ * However, with cluster auto-discovery, the client library asynchronously receives
+ * URLs of servers in the cluster. These URLs do not contain any embedded tokens.
+ * <br>
+ * You need to use this function (or #natsOptions_SetUserInfo) to instruct the client
+ * library to use this token when connecting to a server that requires
+ * authentication and for which there is no embedded token in the URL.
+ *
+ * @see natsOptions_SetUserInfo
+ * @see natsOptions_SetURL
+ * @see natsOptions_SetServers
+ *
+ * @param opts the pointer to the #natsOptions object.
+ * @param token the token to send to the server during connect.
+ */
+NATS_EXTERN natsStatus
+natsOptions_SetToken(natsOptions *opts, const char *token);
 
 /** \brief Indicate if the servers list should be randomized.
  *
@@ -640,6 +748,19 @@ natsOptions_SetCiphers(natsOptions *opts, const char *ciphers);
  */
 NATS_EXTERN natsStatus
 natsOptions_SetExpectedHostname(natsOptions *opts, const char *hostname);
+
+/** \brief Switch server certificate verification.
+ *
+ * By default, the server certificate is verified. You can disable the verification
+ * by passing <c>true</c> to this function.
+ *
+ * \warning This is fine for tests but use with caution since this is not secure.
+ *
+ * @param opts the pointer to the #natsOptions object.
+ * @param skip set it to <c>true</c> to disable - or skip - server certificate verification.
+ */
+NATS_EXTERN natsStatus
+natsOptions_SkipServerVerification(natsOptions *opts, bool skip);
 
 /** \brief Sets the verbose mode.
  *
@@ -842,6 +963,25 @@ natsOptions_SetReconnectedCB(natsOptions *opts,
                              natsConnectionHandler reconnectedCb,
                              void *closure);
 
+/** \brief Sets the callback to be invoked when new servers are discovered.
+ *
+ * Specifies the callback to invoke when the client library has been notified
+ * of one or more new `NATS Servers`.
+ *
+ * \warning Invocation of this callback is asynchronous, which means that
+ * the state may have changed when this callback is invoked.
+ *
+ * @param opts the pointer to the #natsOptions object.
+ * @param discoveredServersCb the callback to be invoked when new servers
+ * have been discovered.
+ * @param closure a pointer to an user object that will be passed to
+ * the callback. `closure` can be `NULL`.
+ */
+NATS_EXTERN natsStatus
+natsOptions_SetDiscoveredServersCB(natsOptions *opts,
+                                   natsConnectionHandler discoveredServersCb,
+                                   void *closure);
+
 /** \brief Sets the external event loop and associated callbacks.
  *
  * If you want to use an external event loop, the `NATS` library will not
@@ -866,6 +1006,98 @@ natsOptions_SetEventLoop(natsOptions *opts,
                          natsEvLoop_ReadAddRemove   readCb,
                          natsEvLoop_WriteAddRemove  writeCb,
                          natsEvLoop_Detach          detachCb);
+
+/** \brief Switch on/off the use of a central message delivery thread pool.
+ *
+ * Normally, each asynchronous subscriber that is created has its own
+ * message delivery thread. The advantage is that it reduces lock
+ * contentions, therefore improving performance.<br>
+ * However, if an application creates many subscribers, this is not scaling
+ * well since the process would use too many threads.
+ *
+ * When a connection is created from a `nats_Options` that has enabled
+ * global message delivery, asynchronous subscribers from this connection
+ * will use a shared thread pool responsible for message delivery.
+ *
+ * \note The message order per subscription is still guaranteed.
+ *
+ * @see nats_SetMessageDeliveryPoolSize()
+ * @see \ref envVariablesGroup
+ *
+ * @param opts the pointer to the #natsOptions object.
+ * @param global if `true`, uses the global message delivery thread pool,
+ * otherwise, each asynchronous subscriber will create their own message
+ * delivery thread.
+ */
+NATS_EXTERN natsStatus
+natsOptions_UseGlobalMessageDelivery(natsOptions *opts, bool global);
+
+/** \brief Dictates the order in which host name are resolved during connect.
+ *
+ * The library would previously favor IPv6 addresses during the connect process.
+ * <br>
+ * You can now change the order, or even exclude a family of addresses, using
+ * this option. Here is the list of possible values:
+ * <br>
+ * Value | Meaning
+ * ------|--------
+ * 46 | try IPv4 first, if it fails try IPv6
+ * 64 | try IPv6 first, if it fails try IPv4
+ * 4 | use only IPv4
+ * 6 | use only IPv6
+ * 0 | any family, no specific order
+ *
+ * \note If this option is not set, or you specify `0` for the order, the
+ * library will use the first IP (based on the DNS configuration) for which
+ * a successful connection can be made.
+ *
+ * @param opts the pointer to the #natsOptions object.
+ * @param order a string representing the order for the IP resolution.
+ */
+NATS_EXTERN natsStatus
+natsOptions_IPResolutionOrder(natsOptions *opts, int order);
+
+/** \brief Sets if Publish calls should send data right away.
+ *
+ * For throughput performance, the client library tries by default to buffer
+ * as much data as possible before sending it over TCP.
+ *
+ * Setting this option to `true` will make Publish calls send the
+ * data right away, reducing latency, but also throughput.
+ *
+ * A good use-case would be a connection used to solely send replies.
+ * Imagine, a requestor sending a request, waiting for the reply before
+ * sending the next request.<br>
+ * The replier application will send only one reply at a time (since
+ * it will not receive the next request until the requestor receives
+ * the reply).<br>
+ * In such case, it makes sense for the reply to be sent right away.
+ *
+ * The alternative would be to call #natsConnection_Flush(),
+ * but this call requires a round-trip with the server, which is less
+ * efficient than using this option.
+ *
+ * Note that the Request() call already automatically sends the request
+ * as fast as possible, there is no need to set an option for that.
+ *
+ * @param opts the pointer to the #natsOptions object.
+ * @param sendAsap a boolean indicating if published data should be
+ * sent right away or be buffered.
+ */
+NATS_EXTERN natsStatus
+natsOptions_SetSendAsap(natsOptions *opts, bool sendAsap);
+
+/** \brief Switches the use of old style requests.
+ *
+ * Setting `useOldStyle` to `true` forces the request calls to use the original
+ * behavior, which is to create a new inbox, a new subscription on that inbox
+ * and set auto-unsubscribe to 1.
+ *
+ * @param opts the pointer to the #natsOptions object.
+ * @param useOldStyle a boolean indicating if old request style should be used.
+ */
+NATS_EXTERN natsStatus
+natsOptions_UseOldRequestStyle(natsOptions *opts, bool useOldStyle);
 
 /** \brief Destroys a #natsOptions object.
  *
@@ -1202,6 +1434,52 @@ natsConnection_GetConnectedUrl(natsConnection *nc, char *buffer, size_t bufferSi
 NATS_EXTERN natsStatus
 natsConnection_GetConnectedServerId(natsConnection *nc, char *buffer, size_t bufferSize);
 
+/** \brief Returns the list of server URLs known to this connection.
+ *
+ * Returns the list of known servers, including additional servers
+ * discovered after a connection has been established (with servers
+ * version 0.9.2 and above).
+ *
+ * No credential information is included in any of the server URLs
+ * returned by this call.<br>
+ * If you want to use any of these URLs to connect to a server that
+ * requires authentication, you will need to use #natsOptions_SetUserInfo
+ * or #natsOptions_SetToken.
+ *
+ * \note The user is responsible for freeing the memory of the returned array.
+ *
+ * @param nc the pointer to the #natsConnection object.
+ * @param servers the location where to store the pointer to the array
+ * of server URLs.
+ * @param count the location where to store the number of elements of the
+ * returned array.
+ */
+NATS_EXTERN natsStatus
+natsConnection_GetServers(natsConnection *nc, char ***servers, int *count);
+
+/** \brief Returns the list of discovered server URLs.
+ *
+ * Unlike #natsConnection_GetServers, this function only returns
+ * the list of servers that have been discovered after the a connection
+ * has been established (with servers version 0.9.2 and above).
+ *
+ * No credential information is included in any of the server URLs
+ * returned by this call.<br>
+ * If you want to use any of these URLs to connect to a server that
+ * requires authentication, you will need to use #natsOptions_SetUserInfo
+ * or #natsOptions_SetToken.
+ *
+ * \note The user is responsible for freeing the memory of the returned array.
+ *
+ * @param nc the pointer to the #natsConnection object.
+ * @param servers the location where to store the pointer to the array
+ * of server URLs.
+ * @param count the location where to store the number of elements of the
+ * returned array.
+ */
+NATS_EXTERN natsStatus
+natsConnection_GetDiscoveredServers(natsConnection *nc, char ***servers, int *count);
+
 /** \brief Gets the last connection error.
  *
  * Returns the last known error as a 'natsStatus' and the location to the
@@ -1330,8 +1608,8 @@ natsConnection_PublishRequestString(natsConnection *nc, const char *subj,
 
 /** \brief Sends a request and waits for a reply.
  *
- * Creates a #natsInbox and performs a #natsConnection_PublishRequest() call
- * with the reply set to that inbox. Returns the first reply received.
+ * Sends a request payload and delivers the first response message,
+ * or an error, including a timeout if no message was received properly.
  * This is optimized for the case of multiple responses.
  *
  * @param replyMsg the location where to store the pointer to the received
@@ -1398,6 +1676,41 @@ natsConnection_Subscribe(natsSubscription **sub, natsConnection *nc,
                          const char *subject, natsMsgHandler cb,
                          void *cbClosure);
 
+/** \brief Creates an asynchronous subscription with a timeout.
+ *
+ * Expresses interest in the given subject. The subject can have wildcards
+ * (see \ref wildcardsGroup). Messages will be delivered to the associated
+ * #natsMsgHandler.
+ *
+ * If no message is received by the given timeout (in milliseconds), the
+ * message handler is invoked with a `NULL` message.<br>
+ * You can then destroy the subscription in the callback, or simply
+ * return, in which case, the message handler will fire again when a
+ * message is received or the subscription times-out again.
+ *
+ * \note Receiving a message reset the timeout. Until all pending messages
+ * are processed, no timeout will occur. The timeout starts when the
+ * message handler for the last pending message returns.
+ *
+ * \warning If you re-use message handler code between subscriptions with
+ * and without timeouts, keep in mind that the message passed in the
+ * message handler may be `NULL`.
+ *
+ * @param sub the location where to store the pointer to the newly created
+ * #natsSubscription object.
+ * @param nc the pointer to the #natsConnection object.
+ * @param subject the subject this subscription is created for.
+ * @param timeout the interval (in milliseconds) after which, if no message
+ * is received, the message handler is invoked with a `NULL` message.
+ * @param cb the #natsMsgHandler callback.
+ * @param cbClosure a pointer to an user defined object (can be `NULL`). See
+ * the #natsMsgHandler prototype.
+ */
+NATS_EXTERN natsStatus
+natsConnection_SubscribeTimeout(natsSubscription **sub, natsConnection *nc,
+                                const char *subject, int64_t timeout,
+                                natsMsgHandler cb, void *cbClosure);
+
 /** \brief Creates a synchronous subcription.
  *
  * Similar to #natsConnection_Subscribe, but creates a synchronous subscription
@@ -1434,6 +1747,43 @@ natsConnection_QueueSubscribe(natsSubscription **sub, natsConnection *nc,
                               const char *subject, const char *queueGroup,
                               natsMsgHandler cb, void *cbClosure);
 
+/** \brief Creates an asynchronous queue subscriber with a timeout.
+ *
+ * Creates an asynchronous queue subscriber on the given subject.
+ * All subscribers with the same queue name will form the queue group and
+ * only one member of the group will be selected to receive any given
+ * message asynchronously.
+ *
+ * If no message is received by the given timeout (in milliseconds), the
+ * message handler is invoked with a `NULL` message.<br>
+ * You can then destroy the subscription in the callback, or simply
+ * return, in which case, the message handler will fire again when a
+ * message is received or the subscription times-out again.
+ *
+ * \note Receiving a message reset the timeout. Until all pending messages
+ * are processed, no timeout will occur. The timeout starts when the
+ * message handler for the last pending message returns.
+ *
+ * \warning If you re-use message handler code between subscriptions with
+ * and without timeouts, keep in mind that the message passed in the
+ * message handler may be `NULL`.
+ *
+ * @param sub the location where to store the pointer to the newly created
+ * #natsSubscription object.
+ * @param nc the pointer to the #natsConnection object.
+ * @param subject the subject this subscription is created for.
+ * @param queueGroup the name of the group.
+ * @param timeout the interval (in milliseconds) after which, if no message
+ * is received, the message handler is invoked with a `NULL` message.
+ * @param cb the #natsMsgHandler callback.
+ * @param cbClosure a pointer to an user defined object (can be `NULL`). See
+ * the #natsMsgHandler prototype.
+ */
+NATS_EXTERN natsStatus
+natsConnection_QueueSubscribeTimeout(natsSubscription **sub, natsConnection *nc,
+                   const char *subject, const char *queueGroup,
+                   int64_t timeout, natsMsgHandler cb, void *cbClosure);
+
 /** \brief Creates a synchronous queue subscriber.
  *
  * Similar to #natsConnection_QueueSubscribe, but creates a synchronous
@@ -1468,6 +1818,8 @@ natsConnection_QueueSubscribeSync(natsSubscription **sub, natsConnection *nc,
  * arrives.
  *
  * @param sub the pointer to the #natsSubscription object.
+ *
+ * \deprecated No longer needed. Will be removed in the future.
  */
 NATS_EXTERN natsStatus
 natsSubscription_NoDeliveryDelay(natsSubscription *sub);
@@ -1725,6 +2077,17 @@ natsSubscription_Destroy(natsSubscription *sub);
  *  but not on:
  *  - `foo` (only one element, needs at least two)
  *  - `bar.baz` (does not start with `foo`).
+ ** @} */
+
+/**  \defgroup envVariablesGroup Environment Variables
+ *  @{
+ *  You will find here the environment variables that change the default behavior
+ *  of the NATS C Client library.
+ * <br><br>
+ * Name | Effect
+ * -----|:-----:
+ * <b>`NATS_DEFAULT_TO_LIB_MSG_DELIVERY`</b> | On #nats_Open, the library looks for this environment variable. If set (to any value), the library will default to using a global thread pool to perform message delivery. See #natsOptions_UseGlobalMessageDelivery and #nats_SetMessageDeliveryPoolSize.
+ *
  ** @} */
 
 

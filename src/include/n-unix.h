@@ -29,6 +29,7 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <string.h>
+#include <netinet/in.h>
 
 typedef pthread_t       natsThread;
 typedef pthread_key_t   natsThreadLocal;
@@ -37,6 +38,7 @@ typedef pthread_cond_t  natsCondition;
 typedef pthread_once_t  natsInitOnceType;
 typedef socklen_t       natsSockLen;
 typedef size_t          natsRecvLen;
+typedef void*           natsLocale;
 
 #define NATS_ONCE_STATIC_INIT   PTHREAD_ONCE_INIT
 
@@ -48,8 +50,11 @@ typedef size_t          natsRecvLen;
 #define NATS_SOCK_ERROR                 (-1)
 #define NATS_SOCK_GET_ERROR             (errno)
 
+#define __NATS_FUNCTION__ __func__
+
 #define nats_asprintf       asprintf
 #define nats_strcasestr     strcasestr
-#define nats_strcasecmp     strcasecmp
+#define nats_vsnprintf      vsnprintf
+#define nats_strtold        strtold
 
 #endif /* N_UNIX_H_ */

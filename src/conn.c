@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 #include "natsp.h"
 
@@ -44,6 +44,15 @@ void natsConn_Unlock(natsConnection *nc) { natsMutex_Unlock(nc->mu); }
 #define _release(c) ((c)->refs--)
 
 #endif // DEV_MODE
+
+
+// CLIENT_PROTO_ZERO is the original client protocol from 2009.
+// http://nats.io/documentation/internals/nats-protocol/
+#define CLIENT_PROTO_ZERO   (0)
+
+// CLIENT_PROTO_INFO signals a client can receive more then the original INFO block.
+// This can be used to update clients on other cluster members, etc.
+#define CLIENT_PROTO_INFO   (1)
 
 /*
  * Forward declarations:
@@ -124,9 +133,15 @@ _joinThreads(struct threadsToJoin *ttj)
 static void
 _clearServerInfo(natsServerInfo *si)
 {
+    int i;
+
     NATS_FREE(si->id);
     NATS_FREE(si->host);
     NATS_FREE(si->version);
+
+    for (i=0; i<si->connectURLsCount; i++)
+        NATS_FREE(si->connectURLs[i]);
+    NATS_FREE(si->connectURLs);
 
     memset(si, 0, sizeof(natsServerInfo));
 }
@@ -150,10 +165,15 @@ _freeConn(natsConnection *nc)
     natsThread_Destroy(nc->flusherThread);
     natsHash_Destroy(nc->subs);
     natsOptions_Destroy(nc->opts);
-    natsSock_DestroyFDSet(nc->sockCtx.fdSet);
+    natsSock_Clear(&nc->sockCtx);
     if (nc->sockCtx.ssl != NULL)
         SSL_free(nc->sockCtx.ssl);
     NATS_FREE(nc->el.buffer);
+    natsConn_destroyRespPool(nc);
+    natsInbox_Destroy(nc->respSub);
+    natsStrHash_Destroy(nc->respMap);
+    natsCondition_Destroy(nc->respReady);
+    natsMutex_Destroy(nc->subsMu);
     natsMutex_Destroy(nc->mu);
 
     NATS_FREE(nc);
@@ -346,6 +366,9 @@ _createConn(natsConnection *nc)
     // the PONG to our initial PING. See _processConnInit().
     natsDeadline_Init(&(nc->sockCtx.deadline), nc->opts->timeout);
 
+    // Set the IP resolution order
+    nc->sockCtx.orderIP = nc->opts->orderIP;
+
     s = natsSock_ConnectTcp(&(nc->sockCtx), nc->url->host, nc->url->port);
     if (s == NATS_OK)
     {
@@ -424,120 +447,49 @@ _readOp(natsConnection *nc, natsControl *control)
     return NATS_UPDATE_ERR_STACK(s);
 }
 
-#define TYPE_STR    (0)
-#define TYPE_BOOL   (1)
-#define TYPE_INT    (2)
-#define TYPE_LONG   (3)
-
+// _processInfo is used to parse the info messages sent
+// from the server.
+// This function may update the server pool.
 static natsStatus
-_parseInfo(char **str, const char *field, int fieldType, void **addr)
-{
-    natsStatus  s    = NATS_OK;
-    char        *ptr = NULL;
-    char        *end = NULL;
-    char        *val = NULL;
-
-    ptr = nats_strcasestr(*str, field);
-    if (ptr == NULL)
-        return NATS_OK;
-
-    ptr += strlen(field);
-    ptr += 2;
-    if (fieldType == TYPE_STR)
-        ptr += 1;
-
-    if (fieldType == TYPE_STR)
-    {
-        end = strchr(ptr, '\"');
-    }
-    else
-    {
-        end = strchr(ptr, ',');
-        if (end == NULL)
-            end = strchr(ptr, '}');
-    }
-
-    if (end == NULL)
-        return nats_setError(NATS_PROTOCOL_ERROR,
-                             "Invalid protocol: field=%s type=%d ptr=%s",
-                             field, fieldType, ptr);
-
-    *str = (end + 1);
-    *end = '\0';
-
-    if (fieldType == TYPE_STR)
-    {
-        val = NATS_STRDUP(ptr);
-        if (val == NULL)
-            nats_setDefaultError(NATS_NO_MEMORY);
-
-        (*(char**)addr) = val;
-    }
-    else if (fieldType == TYPE_BOOL)
-    {
-        if (strcasecmp(ptr, "true") == 0)
-            (*(bool*)addr) = true;
-        else
-            (*(bool*)addr) = false;
-    }
-    else if ((fieldType == TYPE_INT)
-             || (fieldType == TYPE_LONG))
-    {
-        char            *tail = NULL;
-        long long int   lval  = 0;
-
-        errno = 0;
-
-        lval = strtoll(ptr, &tail, 10);
-        if ((errno != 0) || (tail[0] != '\0'))
-            return nats_setError(NATS_PROTOCOL_ERROR,
-                                 "Invalid protocol: field=%s type=%d ptr=%s",
-                                 field, fieldType, ptr);
-
-        if (fieldType == TYPE_INT)
-            (*(int*)addr) = (int) lval;
-        else
-            (*(int64_t*)addr) = (int64_t) lval;
-    }
-    else
-    {
-        abort();
-    }
-
-    return NATS_OK;
-}
-
-static natsStatus
-_processInfo(natsConnection *nc, char *info)
+_processInfo(natsConnection *nc, char *info, int len)
 {
     natsStatus  s     = NATS_OK;
-    char        *copy = NULL;
-    char        *ptr  = NULL;
+    nats_JSON   *json = NULL;
 
     if (info == NULL)
         return NATS_OK;
 
     _clearServerInfo(&(nc->info));
 
-    copy = NATS_STRDUP(info);
-    if (copy == NULL)
-        return nats_setDefaultError(NATS_NO_MEMORY);
+    s = nats_JSONParse(&json, info, len);
+    if (s != NATS_OK)
+        return NATS_UPDATE_ERR_STACK(s);
 
-    ptr = copy;
-
-    s = _parseInfo(&ptr, "server_id", TYPE_STR, (void**) &(nc->info.id));
     if (s == NATS_OK)
-        s = _parseInfo(&ptr, "version", TYPE_STR, (void**) &(nc->info.version));
+        s = nats_JSONGetValue(json, "server_id", TYPE_STR,
+                              (void**) &(nc->info.id));
     if (s == NATS_OK)
-        s = _parseInfo(&ptr, "host", TYPE_STR, (void**) &(nc->info.host));
+        s = nats_JSONGetValue(json, "version", TYPE_STR,
+                              (void**) &(nc->info.version));
     if (s == NATS_OK)
-        s = _parseInfo(&ptr, "port", TYPE_INT, (void**) &(nc->info.port));
+        s = nats_JSONGetValue(json, "host", TYPE_STR,
+                              (void**) &(nc->info.host));
     if (s == NATS_OK)
-        s = _parseInfo(&ptr, "auth_required", TYPE_BOOL, (void**) &(nc->info.authRequired));
+        s = nats_JSONGetValue(json, "port", TYPE_INT,
+                              (void**) &(nc->info.port));
     if (s == NATS_OK)
-        s = _parseInfo(&ptr, "tls_required", TYPE_BOOL, (void**) &(nc->info.tlsRequired));
+        s = nats_JSONGetValue(json, "auth_required", TYPE_BOOL,
+                              (void**) &(nc->info.authRequired));
     if (s == NATS_OK)
-        s = _parseInfo(&ptr, "max_payload", TYPE_LONG, (void**) &(nc->info.maxPayload));
+        s = nats_JSONGetValue(json, "tls_required", TYPE_BOOL,
+                              (void**) &(nc->info.tlsRequired));
+    if (s == NATS_OK)
+        s = nats_JSONGetValue(json, "max_payload", TYPE_LONG,
+                             (void**) &(nc->info.maxPayload));
+    if (s == NATS_OK)
+        s = nats_JSONGetArrayValue(json, "connect_urls", TYPE_STR,
+                                   (void***) &(nc->info.connectURLs),
+                                   &(nc->info.connectURLsCount));
 
 #if 0
     fprintf(stderr, "Id=%s Version=%s Host=%s Port=%d Auth=%s SSL=%s Payload=%d\n",
@@ -547,8 +499,38 @@ _processInfo(natsConnection *nc, char *info)
             (int) nc->info.maxPayload);
 #endif
 
-    NATS_FREE(copy);
+    if (s == NATS_OK)
+    {
+        bool added = false;
+
+        s = natsSrvPool_addNewURLs(nc->srvPool,
+                                   nc->info.connectURLs,
+                                   nc->info.connectURLsCount,
+                                   !nc->opts->noRandomize,
+                                   &added);
+        if ((s == NATS_OK) && added && !nc->initc && (nc->opts->discoveredServersCb != NULL))
+            natsAsyncCb_PostConnHandler(nc, ASYNC_DISCOVERED_SERVERS);
+    }
+
+    if (s != NATS_OK)
+        s = nats_setError(NATS_PROTOCOL_ERROR,
+                          "Invalid protocol: %s", nats_GetLastError(NULL));
+
+    nats_JSONDestroy(json);
+
     return NATS_UPDATE_ERR_STACK(s);
+}
+
+// natsConn_processAsyncINFO does the same than processInfo, but is called
+// from the parser. Calls processInfo under connection's lock
+// protection.
+void
+natsConn_processAsyncINFO(natsConnection *nc, char *buf, int len)
+{
+    natsConn_Lock(nc);
+    // Ignore errors, we will simply not update the server pool...
+    (void) _processInfo(nc, buf, len);
+    natsConn_Unlock(nc);
 }
 
 // makeTLSConn will wrap an existing Conn using TLS
@@ -601,7 +583,7 @@ _makeTLSConn(natsConnection *nc)
                               NATS_SSL_ERR_REASON_STRING);
         }
     }
-    if (s == NATS_OK)
+    if ((s == NATS_OK) && !nc->opts->sslCtx->skipVerify)
     {
         X509 *cert = SSL_get_peer_certificate(ssl);
 
@@ -686,7 +668,7 @@ _processExpectedInfo(natsConnection *nc)
                           _INFO_OP_);
     }
     if (s == NATS_OK)
-        s = _processInfo(nc, control.args);
+        s = _processInfo(nc, control.args, -1);
     if (s == NATS_OK)
         s = _checkForSecure(nc);
 
@@ -714,12 +696,19 @@ _connectProto(natsConnection *nc, char **proto)
         token = user;
         user  = NULL;
     }
+    if ((user == NULL) && (token == NULL))
+    {
+        // Take from options (possibly all NULL)
+        user  = nc->opts->user;
+        pwd   = nc->opts->password;
+        token = nc->opts->token;
+    }
     if (opts->name != NULL)
         name = opts->name;
 
     res = nats_asprintf(proto,
                         "CONNECT {\"verbose\":%s,\"pedantic\":%s,%s%s%s%s%s%s%s%s%s\"tls_required\":%s," \
-                        "\"name\":\"%s\",\"lang\":\"%s\",\"version\":\"%s\"}%s",
+                        "\"name\":\"%s\",\"lang\":\"%s\",\"version\":\"%s\",\"protocol\":%d}%s",
                         nats_GetBoolStr(opts->verbose),
                         nats_GetBoolStr(opts->pedantic),
                         (user != NULL ? "\"user\":\"" : ""),
@@ -733,7 +722,9 @@ _connectProto(natsConnection *nc, char **proto)
                         (token != NULL ? "\"," : ""),
                         nats_GetBoolStr(opts->secure),
                         (name != NULL ? name : ""),
-                        CString, NATS_VERSION_STRING, _CRLF_);
+                        CString, NATS_VERSION_STRING,
+                        CLIENT_PROTO_INFO,
+                        _CRLF_);
     if (res < 0)
         return NATS_NO_MEMORY;
 
@@ -772,10 +763,35 @@ _resendSubscriptions(natsConnection *nc)
     char                *proto;
     int                 res;
     int                 adjustedMax;
+    natsSubscription    **subs = NULL;
+    int                 i = 0;
+    int                 count = 0;
 
-    natsHashIter_Init(&iter, nc->subs);
-    while ((s == NATS_OK) && natsHashIter_Next(&iter, NULL, (void**) &sub))
+    // Since we are going to send protocols to the server, we don't want to
+    // be holding the subsMu lock (which is used in processMsg). So copy
+    // the subscriptions in a temporary array.
+    natsMutex_Lock(nc->subsMu);
+    if (natsHash_Count(nc->subs) > 0)
     {
+        subs = NATS_CALLOC(natsHash_Count(nc->subs), sizeof(natsSubscription*));
+        if (subs == NULL)
+            s = NATS_NO_MEMORY;
+
+        if (s == NATS_OK)
+        {
+            natsHashIter_Init(&iter, nc->subs);
+            while (natsHashIter_Next(&iter, NULL, (void**) &sub))
+            {
+                subs[count++] = sub;
+            }
+        }
+    }
+    natsMutex_Unlock(nc->subsMu);
+
+    for (i=0; (s == NATS_OK) && (i<count); i++)
+    {
+        sub = subs[i];
+
         proto = NULL;
 
         adjustedMax = 0;
@@ -814,6 +830,8 @@ _resendSubscriptions(natsConnection *nc)
         if ((s == NATS_OK) && (adjustedMax > 0))
             s = _sendUnsubProto(nc, sub->sid, adjustedMax);
     }
+
+    NATS_FREE(subs);
 
     return s;
 }
@@ -882,6 +900,241 @@ _clearPendingFlushRequests(natsConnection *nc)
     nc->pongs.outgoingPings = 0;
 }
 
+// Dispose of the respInfo object.
+// The boolean `needsLock` indicates if connection lock is required or not.
+void
+natsConn_disposeRespInfo(natsConnection *nc, respInfo *resp, bool needsLock)
+{
+    if (resp == NULL)
+        return;
+
+    if (!resp->pooled)
+    {
+        natsCondition_Destroy(resp->cond);
+        natsMutex_Destroy(resp->mu);
+        NATS_FREE(resp);
+    }
+    else
+    {
+        if (needsLock)
+            natsConn_Lock(nc);
+
+        resp->closed = false;
+        resp->removed = false;
+        resp->msg = NULL;
+
+        nc->respPool[nc->respPoolIdx++] = resp;
+
+        if (needsLock)
+            natsConn_Unlock(nc);
+    }
+}
+
+// Destroy the pool of respInfo objects.
+void
+natsConn_destroyRespPool(natsConnection *nc)
+{
+    int      i;
+    respInfo *info;
+
+    for (i=0; i<nc->respPoolSize; i++)
+    {
+        info = nc->respPool[i];
+        info->pooled = false;
+        natsConn_disposeRespInfo(nc, info, false);
+    }
+    NATS_FREE(nc->respPool);
+}
+
+// Creates a new respInfo object, binds it to the request's specific
+// subject (that is set in respInbox). The respInfo object is returned.
+// Connection's lock is held on entry.
+natsStatus
+natsConn_addRespInfo(respInfo **newResp, natsConnection *nc, char *respInbox, int respInboxSize)
+{
+    respInfo    *resp  = NULL;
+    natsStatus  s      = NATS_OK;
+
+    if (nc->respPoolIdx > 0)
+    {
+        resp = nc->respPool[--nc->respPoolIdx];
+    }
+    else
+    {
+        resp = (respInfo *) NATS_CALLOC(1, sizeof(respInfo));
+        if (resp == NULL)
+            s = nats_setDefaultError(NATS_NO_MEMORY);
+        if (s == NATS_OK)
+            s = natsMutex_Create(&(resp->mu));
+        if (s == NATS_OK)
+            s = natsCondition_Create(&(resp->cond));
+        if (s == NATS_OK)
+        {
+            if (nc->respPoolSize < RESP_INFO_POOL_MAX_SIZE)
+            {
+                resp->pooled = true;
+                nc->respPoolSize++;
+            }
+        }
+    }
+
+    if (s == NATS_OK)
+    {
+        nc->respId[nc->respIdPos] = '0' + nc->respIdVal;
+        nc->respId[nc->respIdPos + 1] = '\0';
+
+        // Build the response inbox
+        memcpy(respInbox, nc->respSub, NATS_REQ_ID_OFFSET);
+        respInbox[NATS_REQ_ID_OFFSET-1] = '.';
+        memcpy(respInbox+NATS_REQ_ID_OFFSET, nc->respId, nc->respIdPos + 2); // copy the '\0' of respId
+
+        nc->respIdVal++;
+        if (nc->respIdVal == 10)
+        {
+            nc->respIdVal = 0;
+            if (nc->respIdPos > 0)
+            {
+                bool shift = true;
+                int  i, j;
+
+                for (i=nc->respIdPos-1; i>=0; i--)
+                {
+                    if (nc->respId[i] != '9')
+                    {
+                        nc->respId[i]++;
+
+                        for (j=i+1; j<=nc->respIdPos-1; j++)
+                            nc->respId[j] = '0';
+
+                        shift = false;
+                        break;
+                    }
+                }
+                if (shift)
+                {
+                    nc->respId[0] = '1';
+
+                    for (i=1; i<=nc->respIdPos; i++)
+                        nc->respId[i] = '0';
+
+                    nc->respIdPos++;
+                }
+            }
+            else
+            {
+                nc->respId[0] = '1';
+                nc->respIdPos++;
+            }
+            if (nc->respIdPos == NATS_MAX_REQ_ID_LEN)
+                nc->respIdPos = 0;
+        }
+
+        s = natsStrHash_Set(nc->respMap, respInbox+NATS_REQ_ID_OFFSET, true,
+                            (void*) resp, NULL);
+    }
+
+    if (s == NATS_OK)
+        *newResp = resp;
+    else
+        natsConn_disposeRespInfo(nc, resp, false);
+
+    return NATS_UPDATE_ERR_STACK(s);
+}
+
+// Initialize some of the connection's fields used for request/reply mapping.
+// Connection's lock is held on entry.
+natsStatus
+natsConn_initResp(natsConnection *nc, char *ginbox, int ginboxSize)
+{
+    natsStatus s = NATS_OK;
+
+    nc->respPool = NATS_CALLOC(RESP_INFO_POOL_MAX_SIZE, sizeof(respInfo*));
+    if (nc->respPool == NULL)
+        s = nats_setDefaultError(NATS_NO_MEMORY);
+    if (s == NATS_OK)
+        s = natsCondition_Create(&nc->respReady);
+    if (s == NATS_OK)
+        s = natsStrHash_Create(&nc->respMap, 4);
+    if (s == NATS_OK)
+        s = natsInbox_Create(&nc->respSub);
+    if (s == NATS_OK)
+        snprintf(ginbox, ginboxSize, "%s.*", nc->respSub);
+
+    return NATS_UPDATE_ERR_STACK(s);
+}
+
+natsStatus
+natsConn_createRespMux(natsConnection *nc, char *ginbox, natsMsgHandler cb)
+{
+    natsStatus          s    = NATS_OK;
+    natsSubscription    *sub = NULL;
+
+    s = natsConn_subscribe(&sub, nc, ginbox, NULL, 0, cb, (void*) nc);
+    if (s == NATS_OK)
+    {
+        // Between a successful creation of the subscription and
+        // the time we get the connection lock, the connection could
+        // have been closed. If that is the case, we need to
+        // release the subscription, otherwise keep track of it.
+        natsConn_Lock(nc);
+        if (natsConn_isClosed(nc))
+        {
+            natsSub_release(sub);
+            s = NATS_CONNECTION_CLOSED;
+        }
+        else
+        {
+            nc->respMux = sub;
+        }
+        // Signal possible threads waiting for the subscription
+        // to be ready.
+        natsCondition_Broadcast(nc->respReady);
+        natsConn_Unlock(nc);
+    }
+    return s;
+}
+
+natsStatus
+natsConn_waitForRespMux(natsConnection *nc)
+{
+    natsStatus s = NATS_OK;
+
+    natsConn_Lock(nc);
+
+    while (!natsConn_isClosed(nc) && (nc->respMux == NULL))
+        natsCondition_Wait(nc->respReady, nc->mu);
+
+    if (natsConn_isClosed(nc))
+        s = NATS_CONNECTION_CLOSED;
+
+    natsConn_Unlock(nc);
+
+    return s;
+}
+
+// This will clear any pending Request calls.
+// Lock is assumed to be held by the caller.
+static void
+_clearPendingRequestCalls(natsConnection *nc)
+{
+    natsStrHashIter iter;
+    respInfo        *val = NULL;
+
+    if (nc->respMap == NULL)
+        return;
+
+    natsStrHashIter_Init(&iter, nc->respMap);
+    while (natsStrHashIter_Next(&iter, NULL, (void**)&val))
+    {
+        natsMutex_Lock(val->mu);
+        val->closed = true;
+        val->removed = true;
+        natsCondition_Signal(val->cond);
+        natsMutex_Unlock(val->mu);
+        natsStrHashIter_RemoveCurrent(&iter);
+    }
+}
+
 // Try to reconnect using the option parameters.
 // This function assumes we are allowed to reconnect.
 static void
@@ -889,7 +1142,6 @@ _doReconnect(void *arg)
 {
     natsStatus              s = NATS_OK;
     natsConnection          *nc = (natsConnection*) arg;
-    natsThread              *tReconnect = NULL;
     natsSrv                 *cur;
     int64_t                 elapsed;
     natsSrvPool             *pool = NULL;
@@ -991,10 +1243,6 @@ _doReconnect(void *arg)
         if (s == NATS_OK)
             s = _flushReconnectPendingItems(nc);
 
-        // This is where we are truly connected.
-        if (s == NATS_OK)
-            nc->status = CONNECTED;
-
         if (s != NATS_OK)
         {
             // In case we were at the last iteration, this is the error
@@ -1018,14 +1266,14 @@ _doReconnect(void *arg)
             continue;
         }
 
+        // This is where we are truly connected.
+        nc->status = CONNECTED;
+
         // No more failure allowed past this point.
 
         // Clear out server stats for the server we connected to..
         cur->didConnect = true;
         cur->reconnects = 0;
-
-        tReconnect = nc->reconnectThread;
-        nc->reconnectThread = NULL;
 
         // At this point we know that we don't need the pending buffer
         // anymore. Destroy now.
@@ -1045,8 +1293,16 @@ _doReconnect(void *arg)
         // Make sure we flush everything
         (void) natsConnection_Flush(nc);
 
-        natsThread_Join(tReconnect);
-        natsThread_Destroy(tReconnect);
+        natsConn_Lock(nc);
+        // This thread will be NULL if the connection is being closed.
+        // If not, we need to detach and destroy the thread.
+        if (nc->reconnectThread != NULL)
+        {
+            natsThread_Detach(nc->reconnectThread);
+            natsThread_Destroy(nc->reconnectThread);
+            nc->reconnectThread = NULL;
+        }
+        natsConn_Unlock(nc);
 
         return;
     }
@@ -1241,15 +1497,21 @@ _connect(natsConnection *nc)
     natsStatus  retSts= NATS_OK;
     natsSrvPool *pool = NULL;
     int         i;
+    int         poolSize;
 
     natsConn_Lock(nc);
+    nc->initc = true;
 
     pool = nc->srvPool;
 
     // Create actual socket connection
     // For first connect we walk all servers in the pool and try
     // to connect immediately.
-    for (i = 0; i < natsSrvPool_GetSize(pool); i++)
+
+    // Get the size of the pool. The pool may change inside the loop
+    // iteration due to INFO protocol.
+    poolSize = natsSrvPool_GetSize(pool);
+    for (i = 0; i < poolSize; i++)
     {
         nc->url = natsSrvPool_GetSrvUrl(pool,i);
 
@@ -1277,6 +1539,9 @@ _connect(natsConnection *nc)
 
                 nc->url = NULL;
             }
+            // Refresh our view of pool length since it may have been
+            // modified when processing the INFO protocol.
+            poolSize = natsSrvPool_GetSize(pool);
         }
         else
         {
@@ -1290,6 +1555,7 @@ _connect(natsConnection *nc)
         s = nats_setDefaultError(NATS_NO_SERVER);
     }
 
+    nc->initc = false;
     natsConn_Unlock(nc);
 
     return NATS_UPDATE_ERR_STACK(s);
@@ -1351,7 +1617,7 @@ _processOpError(natsConnection *nc, natsStatus s)
             ls = natsThread_Create(&(nc->reconnectThread),
                                   _doReconnect, (void*) nc);
         }
-        if (ls ==  NATS_OK)
+        if (ls == NATS_OK)
         {
             natsConn_Unlock(nc);
 
@@ -1614,6 +1880,7 @@ _removeAllSubscriptions(natsConnection *nc)
     natsHashIter     iter;
     natsSubscription *sub;
 
+    natsMutex_Lock(nc->subsMu);
     natsHashIter_Init(&iter, nc->subs);
     while (natsHashIter_Next(&iter, NULL, (void**) &sub))
     {
@@ -1623,6 +1890,7 @@ _removeAllSubscriptions(natsConnection *nc)
 
         natsSub_release(sub);
     }
+    natsMutex_Unlock(nc->subsMu);
 }
 
 
@@ -1636,6 +1904,7 @@ _close(natsConnection *nc, natsConnStatus status, bool doCBs)
     struct threadsToJoin    ttj;
     bool                    sockWasActive = false;
     bool                    detach = false;
+    natsSubscription        *sub = NULL;
 
     natsConn_lockAndRetain(nc);
 
@@ -1654,6 +1923,9 @@ _close(natsConnection *nc, natsConnStatus status, bool doCBs)
     // Kick out all calls to natsConnection_Flush[Timeout]().
     _clearPendingFlushRequests(nc);
 
+    // Kick out any queued and blocking requests.
+    _clearPendingRequestCalls(nc);
+
     if (nc->ptmr != NULL)
         natsTimer_Stop(nc->ptmr);
 
@@ -1662,7 +1934,6 @@ _close(natsConnection *nc, natsConnStatus status, bool doCBs)
     _removeAllSubscriptions(nc);
 
     // Go ahead and make sure we have flushed the outbound buffer.
-    nc->status = CLOSED;
     if (nc->sockCtx.fdActive)
     {
         natsConn_bufferFlush(nc);
@@ -1694,7 +1965,13 @@ _close(natsConnection *nc, natsConnStatus status, bool doCBs)
     if (doCBs && (nc->opts->disconnectedCb != NULL) && sockWasActive)
         natsAsyncCb_PostConnHandler(nc, ASYNC_DISCONNECTED);
 
+    sub = nc->respMux;
+    nc->respMux = NULL;
+
     natsConn_Unlock(nc);
+
+    if (sub != NULL)
+        natsSub_release(sub);
 
     _joinThreads(&ttj);
 
@@ -1720,17 +1997,6 @@ _close(natsConnection *nc, natsConnStatus status, bool doCBs)
         nc->opts->evCbs.detach(nc->el.data);
         natsConn_release(nc);
     }
-}
-
-static void
-_processSlowConsumer(natsConnection *nc, natsSubscription *sub)
-{
-    nc->err = NATS_SLOW_CONSUMER;
-
-    if (!(sub->slowConsumer) && (nc->opts->asyncErrCb != NULL))
-        natsAsyncCb_PostErrHandler(nc, sub, NATS_SLOW_CONSUMER);
-
-    sub->slowConsumer = true;
 }
 
 static natsStatus
@@ -1762,8 +2028,10 @@ natsConn_processMsg(natsConnection *nc, char *buf, int bufLen)
     natsStatus       s    = NATS_OK;
     natsSubscription *sub = NULL;
     natsMsg          *msg = NULL;
+    natsMsgDlvWorker *ldw = NULL;
+    bool             sc   = false;
 
-    natsConn_Lock(nc);
+    natsMutex_Lock(nc->subsMu);
 
     nc->stats.inMsgs  += 1;
     nc->stats.inBytes += (uint64_t) bufLen;
@@ -1771,7 +2039,7 @@ natsConn_processMsg(natsConnection *nc, char *buf, int bufLen)
     sub = natsHash_Get(nc->subs, nc->ps->ma.sid);
     if (sub == NULL)
     {
-        natsConn_Unlock(nc);
+        natsMutex_Unlock(nc->subsMu);
         return NATS_OK;
     }
 
@@ -1781,11 +2049,14 @@ natsConn_processMsg(natsConnection *nc, char *buf, int bufLen)
     s = _createMsg(&msg, nc, buf, bufLen);
     if (s != NATS_OK)
     {
-        natsConn_Unlock(nc);
+        natsMutex_Unlock(nc->subsMu);
         return s;
     }
 
-    natsSub_Lock(sub);
+    if ((ldw = sub->libDlvWorker) != NULL)
+        natsMutex_Lock(ldw->lock);
+    else
+        natsSub_Lock(sub);
 
     sub->msgList.msgs++;
     sub->msgList.bytes += bufLen;
@@ -1797,14 +2068,17 @@ natsConn_processMsg(natsConnection *nc, char *buf, int bufLen)
 
         sub->dropped++;
 
+        sc = sub->slowConsumer;
+        sub->slowConsumer = true;
+
         // Undo stats from above.
         sub->msgList.msgs--;
         sub->msgList.bytes -= bufLen;
-
-        _processSlowConsumer(nc, sub);
     }
     else
     {
+        natsMsgList *list = NULL;
+
         if (sub->msgList.msgs > sub->msgsMax)
             sub->msgsMax = sub->msgList.msgs;
 
@@ -1813,30 +2087,54 @@ natsConn_processMsg(natsConnection *nc, char *buf, int bufLen)
 
         sub->slowConsumer = false;
 
-        if (sub->msgList.head == NULL)
-            sub->msgList.head = msg;
+        if (ldw != NULL)
+        {
+            msg->sub = sub;
+            list = &ldw->msgList;
+        }
+        else
+        {
+            list = &sub->msgList;
+        }
 
-        if (sub->msgList.tail != NULL)
-            sub->msgList.tail->next = msg;
+        if (list->head == NULL)
+            list->head = msg;
 
-        sub->msgList.tail = msg;
+        if (list->tail != NULL)
+            list->tail->next = msg;
 
-        if ((sub->noDelay)
-            || (sub->msgList.msgs >= sub->signalLimit))
+        list->tail = msg;
+
+        if (ldw != NULL)
+        {
+            if (ldw->inWait)
+                natsCondition_Broadcast(ldw->cond);
+        }
+        else
         {
             if (sub->inWait > 0)
                 natsCondition_Broadcast(sub->cond);
         }
-        else if (sub->signalTimerInterval != 1)
-        {
-            sub->signalTimerInterval = 1;
-            natsTimer_Reset(sub->signalTimer, 1);
-        }
     }
 
-    natsSub_Unlock(sub);
+    if (ldw != NULL)
+        natsMutex_Unlock(ldw->lock);
+    else
+        natsSub_Unlock(sub);
 
-    natsConn_Unlock(nc);
+    natsMutex_Unlock(nc->subsMu);
+
+    if (sc)
+    {
+        natsConn_Lock(nc);
+
+        nc->err = NATS_SLOW_CONSUMER;
+
+        if (nc->opts->asyncErrCb != NULL)
+            natsAsyncCb_PostErrHandler(nc, sub, NATS_SLOW_CONSUMER);
+
+        natsConn_Unlock(nc);
+    }
 
     return s;
 }
@@ -1845,6 +2143,32 @@ void
 natsConn_processOK(natsConnection *nc)
 {
     // Do nothing for now.
+}
+
+// _processPermissionViolation is called when the server signals a subject
+// permissions violation on either publish or subscribe.
+static void
+_processPermissionViolation(natsConnection *nc, char *error)
+{
+    natsConn_Lock(nc);
+    nc->err = NATS_NOT_PERMITTED;
+    snprintf(nc->errStr, sizeof(nc->errStr), "%s", error);
+    if (nc->opts->asyncErrCb != NULL)
+        natsAsyncCb_PostErrHandler(nc, NULL, NATS_NOT_PERMITTED);
+    natsConn_Unlock(nc);
+}
+
+// _processAuthorizationViolation is called when the server signals a user
+// authorization violation.
+static void
+_processAuthorizationViolation(natsConnection *nc, char *error)
+{
+    natsConn_Lock(nc);
+    nc->err = NATS_NOT_PERMITTED;
+    snprintf(nc->errStr, sizeof(nc->errStr), "%s", error);
+    if (nc->opts->asyncErrCb != NULL)
+        natsAsyncCb_PostErrHandler(nc, NULL, NATS_NOT_PERMITTED);
+    natsConn_Unlock(nc);
 }
 
 void
@@ -1861,6 +2185,14 @@ natsConn_processErr(natsConnection *nc, char *buf, int bufLen)
     if (strcasecmp(error, STALE_CONNECTION) == 0)
     {
         _processOpError(nc, NATS_STALE_CONNECTION);
+    }
+    else if (nats_strcasestr(error, PERMISSIONS_ERR) != NULL)
+    {
+        _processPermissionViolation(nc, error);
+    }
+    else if (nats_strcasestr(error, AUTHORIZATION_ERR) != NULL)
+    {
+        _processAuthorizationViolation(nc, error);
     }
     else
     {
@@ -1925,12 +2257,11 @@ natsConn_addSubcription(natsConnection *nc, natsSubscription *sub)
 }
 
 void
-natsConn_removeSubscription(natsConnection *nc, natsSubscription *removedSub, bool needsLock)
+natsConn_removeSubscription(natsConnection *nc, natsSubscription *removedSub)
 {
     natsSubscription *sub = NULL;
 
-    if (needsLock)
-        natsConn_Lock(nc);
+    natsMutex_Lock(nc->subsMu);
 
     sub = natsHash_Remove(nc->subs, removedSub->sid);
 
@@ -1939,8 +2270,7 @@ natsConn_removeSubscription(natsConnection *nc, natsSubscription *removedSub, bo
     if (sub != NULL)
         natsSub_close(sub, false);
 
-    if (needsLock)
-        natsConn_Unlock(nc);
+    natsMutex_Unlock(nc->subsMu);
 
     // If we really removed the subscription, then release it.
     if (sub != NULL)
@@ -1952,7 +2282,7 @@ natsConn_removeSubscription(natsConnection *nc, natsSubscription *removedSub, bo
 natsStatus
 natsConn_subscribe(natsSubscription **newSub,
                    natsConnection *nc, const char *subj, const char *queue,
-                   natsMsgHandler cb, void *cbClosure, bool noDelay)
+                   int64_t timeout, natsMsgHandler cb, void *cbClosure)
 {
     natsStatus          s    = NATS_OK;
     natsSubscription    *sub = NULL;
@@ -1972,11 +2302,13 @@ natsConn_subscribe(natsSubscription **newSub,
         return nats_setDefaultError(NATS_CONNECTION_CLOSED);
     }
 
-    s = natsSub_create(&sub, nc, subj, queue, cb, cbClosure, noDelay);
+    s = natsSub_create(&sub, nc, subj, queue, timeout, cb, cbClosure);
     if (s == NATS_OK)
     {
+        natsMutex_Lock(nc->subsMu);
         sub->sid = ++(nc->ssid);
         s = natsConn_addSubcription(nc, sub);
+        natsMutex_Unlock(nc->subsMu);
     }
 
     if (s == NATS_OK)
@@ -2025,7 +2357,7 @@ natsConn_subscribe(natsSubscription **newSub,
         // for the delivery thread to unroll.
         natsSub_close(sub, false);
 
-        natsConn_removeSubscription(nc, sub, false);
+        natsConn_removeSubscription(nc, sub);
 
         natsSub_release(sub);
     }
@@ -2049,7 +2381,9 @@ natsConn_unsubscribe(natsConnection *nc, natsSubscription *sub, int max)
         return nats_setDefaultError(NATS_CONNECTION_CLOSED);
     }
 
+    natsMutex_Lock(nc->subsMu);
     sub = natsHash_Get(nc->subs, sub->sid);
+    natsMutex_Unlock(nc->subsMu);
     if (sub == NULL)
     {
         // Already unsubscribed
@@ -2057,12 +2391,10 @@ natsConn_unsubscribe(natsConnection *nc, natsSubscription *sub, int max)
         return NATS_OK;
     }
 
-    natsSub_Lock(sub);
-    sub->max = max;
-    natsSub_Unlock(sub);
-
     if (max == 0)
-        natsConn_removeSubscription(nc, sub, false);
+        natsConn_removeSubscription(nc, sub);
+    else
+        natsSub_setMax(sub, max);
 
     if (!natsConn_isReconnecting(nc))
     {
@@ -2138,11 +2470,13 @@ natsConn_create(natsConnection **newConn, natsOptions *options)
 
     s = natsMutex_Create(&(nc->mu));
     if (s == NATS_OK)
+        s = natsMutex_Create(&(nc->subsMu));
+    if (s == NATS_OK)
         s = _setupServerPool(nc);
     if (s == NATS_OK)
         s = natsHash_Create(&(nc->subs), 8);
     if (s == NATS_OK)
-        s =  natsSock_CreateFDSet(&(nc->sockCtx.fdSet));
+        s = natsSock_Init(&nc->sockCtx);
     if (s == NATS_OK)
     {
         s = natsBuf_Create(&(nc->scratch), DEFAULT_SCRATCH_SIZE);
@@ -2408,6 +2742,10 @@ natsConnection_FlushTimeout(natsConnection *nc, int64_t timeout)
             // If we are here, it is possible that we timed-out, or some other
             // error occurred. Make sure the request is no longer in the list.
             _removePongFromList(nc, pong);
+
+            // Set the error. If we don't do that, and flush is called in a loop,
+            // the stack would be growing with Flush/FlushTimeout.
+            s = nats_setDefaultError(s);
         }
 
         // We are done with the pong
@@ -2469,10 +2807,14 @@ natsConnection_GetStats(natsConnection *nc, natsStatistics *stats)
     if ((nc == NULL) || (stats == NULL))
         return nats_setDefaultError(NATS_INVALID_ARG);
 
+    // Stats are updated either under connection's mu or subsMu mutexes.
+    // Lock both to safely get them.
     natsConn_Lock(nc);
+    natsMutex_Lock(nc->subsMu);
 
     memcpy(stats, &(nc->stats), sizeof(natsStatistics));
 
+    natsMutex_Unlock(nc->subsMu);
     natsConn_Unlock(nc);
 
     return s;
@@ -2528,6 +2870,40 @@ natsConnection_GetConnectedServerId(natsConnection *nc, char *buffer, size_t buf
     natsConn_Unlock(nc);
 
     return s;
+}
+
+natsStatus
+natsConnection_GetServers(natsConnection *nc, char ***servers, int *count)
+{
+    natsStatus  s       = NATS_OK;
+
+    if ((nc == NULL) || (servers == NULL) || (count == NULL))
+        return nats_setDefaultError(NATS_INVALID_ARG);
+
+    natsConn_Lock(nc);
+
+    s = natsSrvPool_GetServers(nc->srvPool, false, servers, count);
+
+    natsConn_Unlock(nc);
+
+    return NATS_UPDATE_ERR_STACK(s);
+}
+
+natsStatus
+natsConnection_GetDiscoveredServers(natsConnection *nc, char ***servers, int *count)
+{
+    natsStatus  s       = NATS_OK;
+
+    if ((nc == NULL) || (servers == NULL) || (count == NULL))
+        return nats_setDefaultError(NATS_INVALID_ARG);
+
+    natsConn_Lock(nc);
+
+    s = natsSrvPool_GetServers(nc->srvPool, true, servers, count);
+
+    natsConn_Unlock(nc);
+
+    return NATS_UPDATE_ERR_STACK(s);
 }
 
 natsStatus

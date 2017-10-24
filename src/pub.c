@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 #include "natsp.h"
 
@@ -8,6 +8,7 @@
 #include "sub.h"
 #include "msg.h"
 #include "nuid.h"
+#include "mem.h"
 
 static const char *digits = "0123456789";
 
@@ -136,7 +137,7 @@ _publishEx(natsConnection *nc, const char *subj,
 
     if (s == NATS_OK)
     {
-        if (directFlush)
+        if (directFlush || nc->opts->sendAsap)
             s = natsConn_bufferFlush(nc);
         else
             natsConn_kickFlusher(nc);
@@ -238,25 +239,18 @@ natsConnection_PublishRequestString(natsConnection *nc, const char *subj,
     return NATS_UPDATE_ERR_STACK(s);
 }
 
-/*
- * Creates an inbox and performs a natsPublishRequest() call with the reply
- * set to that inbox. Returns the first reply received.
- * This is optimized for the case of multiple responses.
- */
-natsStatus
-natsConnection_Request(natsMsg **replyMsg, natsConnection *nc, const char *subj,
-                       const void *data, int dataLen, int64_t timeout)
+// Old way of sending a request...
+static natsStatus
+_oldRequest(natsMsg **replyMsg, natsConnection *nc, const char *subj,
+                    const void *data, int dataLen, int64_t timeout)
 {
     natsStatus          s       = NATS_OK;
     natsSubscription    *sub    = NULL;
     char                inbox[NATS_INBOX_PRE_LEN + NUID_BUFFER_LEN + 1];
 
-    if (replyMsg == NULL)
-        return nats_setDefaultError(NATS_INVALID_ARG);
-
     s = natsInbox_init(inbox, sizeof(inbox));
     if (s == NATS_OK)
-        s = natsConn_subscribe(&sub, nc, inbox, NULL, NULL, NULL, true);
+        s = natsConn_subscribe(&sub, nc, inbox, NULL, 0, NULL, NULL);
     if (s == NATS_OK)
         s = natsSubscription_AutoUnsubscribe(sub, 1);
     if (s == NATS_OK)
@@ -265,6 +259,136 @@ natsConnection_Request(natsMsg **replyMsg, natsConnection *nc, const char *subj,
         s = natsSubscription_NextMsg(replyMsg, sub, timeout);
 
     natsSubscription_Destroy(sub);
+
+    return NATS_UPDATE_ERR_STACK(s);
+}
+
+static void
+_respHandler(natsConnection *nc, natsSubscription *sub, natsMsg *msg, void *closure)
+{
+    char     *rt   = (char *) (natsMsg_GetSubject(msg) + NATS_REQ_ID_OFFSET);
+    respInfo *resp = NULL;
+
+    if (rt == NULL)
+        return;
+
+    natsConn_Lock(nc);
+    if (natsConn_isClosed(nc))
+    {
+        natsConn_Unlock(nc);
+        return;
+    }
+    resp = (respInfo*) natsStrHash_Remove(nc->respMap, rt);
+    if (resp != NULL)
+    {
+        natsMutex_Lock(resp->mu);
+        resp->msg = msg;
+        resp->removed = true;
+        natsCondition_Signal(resp->cond);
+        natsMutex_Unlock(resp->mu);
+    }
+    natsConn_Unlock(nc);
+}
+
+/*
+ * Sends a request and waits for the first reply, up to the provided timeout.
+ * This is optimized for the case of multiple responses.
+ */
+natsStatus
+natsConnection_Request(natsMsg **replyMsg, natsConnection *nc, const char *subj,
+                       const void *data, int dataLen, int64_t timeout)
+{
+    natsStatus          s           = NATS_OK;
+    natsSubscription    *sub        = NULL;
+    respInfo            *resp       = NULL;
+    bool                createSub   = false;
+    bool                needsRemoval= true;
+    bool                waitForSub  = false;
+    char                ginbox[NATS_INBOX_PRE_LEN + NUID_BUFFER_LEN + 1 + 1 + 1]; // _INBOX.<nuid>.*
+    char                respInbox[NATS_INBOX_PRE_LEN + NUID_BUFFER_LEN + 1 + NATS_MAX_REQ_ID_LEN + 1]; // _INBOX.<nuid>.<reqId>
+
+    if ((replyMsg == NULL) || (nc == NULL))
+        return nats_setDefaultError(NATS_INVALID_ARG);
+
+    natsConn_Lock(nc);
+    if (natsConn_isClosed(nc))
+    {
+        natsConn_Unlock(nc);
+        return NATS_CONNECTION_CLOSED;
+    }
+    if (nc->opts->useOldRequestStyle)
+    {
+        natsConn_Unlock(nc);
+        return _oldRequest(replyMsg, nc, subj, data, dataLen, timeout);
+    }
+
+    // Since we are going to release the lock and connection
+    // may be closed while we wait for reply, we need to retain
+    // the connection object.
+    natsConn_retain(nc);
+
+    // Setup only once
+    if (nc->respReady == NULL)
+    {
+        s = natsConn_initResp(nc, ginbox, sizeof(ginbox));
+        createSub = (s == NATS_OK);
+    }
+    if (s == NATS_OK)
+        s = natsConn_addRespInfo(&resp, nc, respInbox, sizeof(respInbox));
+
+    // If multiple requests are performed in parallel, only
+    // one will create the wildcard subscriptions, but the
+    // others need to wait for the subscription to be setup
+    // before publishing the message.
+    if (s == NATS_OK)
+        waitForSub = (nc->respMux == NULL);
+
+    natsConn_Unlock(nc);
+
+    if ((s == NATS_OK) && createSub)
+        s = natsConn_createRespMux(nc, ginbox, _respHandler);
+    else if ((s == NATS_OK) && waitForSub)
+        s = natsConn_waitForRespMux(nc);
+
+    if (s == NATS_OK)
+    {
+        s = _publishEx(nc, subj, respInbox, data, dataLen, true);
+        if (s == NATS_OK)
+        {
+            natsMutex_Lock(resp->mu);
+            while ((s != NATS_TIMEOUT) && (resp->msg == NULL) && !resp->closed)
+                s = natsCondition_TimedWait(resp->cond, resp->mu, timeout);
+
+            // If we have a message, deliver it.
+            if (resp->msg != NULL)
+            {
+                *replyMsg = resp->msg;
+                s = NATS_OK;
+            }
+            else
+            {
+                // Set the correct error status that we return to the user
+                if (resp->closed)
+                    s = NATS_CONNECTION_CLOSED;
+                else
+                    s = NATS_TIMEOUT;
+            }
+            resp->msg = NULL;
+            needsRemoval = !resp->removed;
+            natsMutex_Unlock(resp->mu);
+        }
+    }
+    // Common to success or if we failed to create the sub, send the request...
+    if (needsRemoval)
+    {
+        natsConn_Lock(nc);
+        if (nc->respMap != NULL)
+            natsStrHash_Remove(nc->respMap, respInbox+NATS_REQ_ID_OFFSET);
+        natsConn_Unlock(nc);
+    }
+    natsConn_disposeRespInfo(nc, resp, true);
+
+    natsConn_release(nc);
 
     return NATS_UPDATE_ERR_STACK(s);
 }

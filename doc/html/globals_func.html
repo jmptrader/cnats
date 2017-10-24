@@ -33,7 +33,7 @@
  <tr style="height: 56px;">
   <td id="projectalign" style="padding-left: 0.5em;" >
    <div id="projectname">NATS C Client
-   &#160;<span id="projectnumber">1.3.6</span>
+   &#160;<span id="projectnumber">1.7.2</span>
    </div>
    <div id="projectbrief">The nats.io C Client, Supported by Apcera</div>
   </td>
@@ -154,6 +154,12 @@ $(document).ready(function(){initNavTree('globals_func.html','');});
 <li>nats_PrintLastErrorStack()
 : <a class="el" href="group__library_group.html#ga5fab3b18c4fe3630254483575f6066f4">nats.h</a>
 </li>
+<li>nats_ReleaseThreadMemory()
+: <a class="el" href="group__library_group.html#gafe171baefa00a85b77205116e9f3e48a">nats.h</a>
+</li>
+<li>nats_SetMessageDeliveryPoolSize()
+: <a class="el" href="group__library_group.html#gab21e94ce7a7d226611ea2c05914cf19d">nats.h</a>
+</li>
 <li>nats_Sleep()
 : <a class="el" href="group__library_group.html#gad5040264cd4b1404956babf3c03a4f09">nats.h</a>
 </li>
@@ -184,11 +190,17 @@ $(document).ready(function(){initNavTree('globals_func.html','');});
 <li>natsConnection_GetConnectedUrl()
 : <a class="el" href="group__conn_mgt_group.html#gaf623280407c43ade02285005f0642e6d">nats.h</a>
 </li>
+<li>natsConnection_GetDiscoveredServers()
+: <a class="el" href="group__conn_mgt_group.html#gad25c77be0873495412c90a73fe450708">nats.h</a>
+</li>
 <li>natsConnection_GetLastError()
 : <a class="el" href="group__conn_mgt_group.html#gab6cfa9cb6857ae10f096a94f5e244e63">nats.h</a>
 </li>
 <li>natsConnection_GetMaxPayload()
 : <a class="el" href="group__conn_mgt_group.html#ga68e7149f7ff1cc4989b3f795fa7e76d9">nats.h</a>
+</li>
+<li>natsConnection_GetServers()
+: <a class="el" href="group__conn_mgt_group.html#gaf4ee7262e35e44c40ad5dfe9240db76b">nats.h</a>
 </li>
 <li>natsConnection_GetStats()
 : <a class="el" href="group__conn_mgt_group.html#ga68821a8ae1176096b5afef7fdc7947ec">nats.h</a>
@@ -226,6 +238,9 @@ $(document).ready(function(){initNavTree('globals_func.html','');});
 <li>natsConnection_QueueSubscribeSync()
 : <a class="el" href="group__conn_sub_group.html#ga68630ea7c4bbdc7f8cd62058b41fb476">nats.h</a>
 </li>
+<li>natsConnection_QueueSubscribeTimeout()
+: <a class="el" href="group__conn_sub_group.html#ga96fa115fd5b2ef7658884da80714b91c">nats.h</a>
+</li>
 <li>natsConnection_Request()
 : <a class="el" href="group__conn_pub_group.html#gaf4b4a022f9c21fc269b87c000330c5a7">nats.h</a>
 </li>
@@ -241,44 +256,14 @@ $(document).ready(function(){initNavTree('globals_func.html','');});
 <li>natsConnection_SubscribeSync()
 : <a class="el" href="group__conn_sub_group.html#ga17574d5165f7e285462e3d3b2709edf4">nats.h</a>
 </li>
+<li>natsConnection_SubscribeTimeout()
+: <a class="el" href="group__conn_sub_group.html#gacb2c83b58b7909715424cbc327fdd404">nats.h</a>
+</li>
 <li>natsInbox_Create()
 : <a class="el" href="group__inbox_group.html#ga3d59c517d5aa0827b22e66a308a8fe6e">nats.h</a>
 </li>
 <li>natsInbox_Destroy()
 : <a class="el" href="group__inbox_group.html#gac3db6bd01235144886cb0ee5cf444048">nats.h</a>
-</li>
-<li>natsLibevent_Attach()
-: <a class="el" href="group__libevent_functions.html#ga76e6c1c8dd07fbfdbcb8fdc941798c89">libevent.h</a>
-</li>
-<li>natsLibevent_Detach()
-: <a class="el" href="group__libevent_functions.html#gaac76f5937329a8650f69c6bd8af36cd5">libevent.h</a>
-</li>
-<li>natsLibevent_Init()
-: <a class="el" href="group__libevent_functions.html#ga195d269473332931fd0fede0bac3309e">libevent.h</a>
-</li>
-<li>natsLibevent_Read()
-: <a class="el" href="group__libevent_functions.html#ga8a14ce23b4f6ba3bf63369961f9a5552">libevent.h</a>
-</li>
-<li>natsLibevent_Write()
-: <a class="el" href="group__libevent_functions.html#ga7ac99f326a59e5663ff66f5023c87091">libevent.h</a>
-</li>
-<li>natsLibuv_Attach()
-: <a class="el" href="group__libuv_functions.html#ga9c9f050fd2101db956ad8a3cbee68272">libuv.h</a>
-</li>
-<li>natsLibuv_Detach()
-: <a class="el" href="group__libuv_functions.html#ga8df663525fb59b882a0f3bd563083dc7">libuv.h</a>
-</li>
-<li>natsLibuv_Init()
-: <a class="el" href="group__libuv_functions.html#ga5d4b677cbe1cd132c37bc56dbfc6949e">libuv.h</a>
-</li>
-<li>natsLibuv_Read()
-: <a class="el" href="group__libuv_functions.html#ga85c722b2d2699a954362b20528f0aaac">libuv.h</a>
-</li>
-<li>natsLibuv_SetThreadLocalLoop()
-: <a class="el" href="group__libuv_functions.html#ga1baf4a20b138dcf00807a8b830f4e02d">libuv.h</a>
-</li>
-<li>natsLibuv_Write()
-: <a class="el" href="group__libuv_functions.html#gafaa633c9067f485f330b72644277b07d">libuv.h</a>
 </li>
 <li>natsMsg_Create()
 : <a class="el" href="group__msg_group.html#ga098e4fec1c5a71c00a0d092fbd6d1a21">nats.h</a>
@@ -304,6 +289,9 @@ $(document).ready(function(){initNavTree('globals_func.html','');});
 <li>natsOptions_Destroy()
 : <a class="el" href="group__opts_group.html#ga93d8068cd6fff53b7f8e1c403db45eb9">nats.h</a>
 </li>
+<li>natsOptions_IPResolutionOrder()
+: <a class="el" href="group__opts_group.html#ga7ca713c7532eff4d41a492e95b8822cf">nats.h</a>
+</li>
 <li>natsOptions_LoadCATrustedCertificates()
 : <a class="el" href="group__opts_group.html#ga2cd6563694a439b3949a31fd81103099">nats.h</a>
 </li>
@@ -321,6 +309,9 @@ $(document).ready(function(){initNavTree('globals_func.html','');});
 </li>
 <li>natsOptions_SetDisconnectedCB()
 : <a class="el" href="group__opts_group.html#gadc8dc0cedd91bda71d544f3dedc4a039">nats.h</a>
+</li>
+<li>natsOptions_SetDiscoveredServersCB()
+: <a class="el" href="group__opts_group.html#gab5baab507c974402ab0d8c5e8227ee65">nats.h</a>
 </li>
 <li>natsOptions_SetErrorHandler()
 : <a class="el" href="group__opts_group.html#ga127ec7a8196b453947a7fa9a64096cbd">nats.h</a>
@@ -364,17 +355,35 @@ $(document).ready(function(){initNavTree('globals_func.html','');});
 <li>natsOptions_SetSecure()
 : <a class="el" href="group__opts_group.html#gaa1f09416d443fa7a6af6b695da563eba">nats.h</a>
 </li>
+<li>natsOptions_SetSendAsap()
+: <a class="el" href="group__opts_group.html#ga8f06568cc3319a5a0eef9f80282034ca">nats.h</a>
+</li>
 <li>natsOptions_SetServers()
 : <a class="el" href="group__opts_group.html#gacb7e964ae54b74d972d72e118b7b8bdf">nats.h</a>
 </li>
 <li>natsOptions_SetTimeout()
 : <a class="el" href="group__opts_group.html#ga17cd7fe41176cd98aca1184fa9352ad9">nats.h</a>
 </li>
+<li>natsOptions_SetToken()
+: <a class="el" href="group__opts_group.html#gad58a5b9dabadeebda30e952ff7b39193">nats.h</a>
+</li>
 <li>natsOptions_SetURL()
 : <a class="el" href="group__opts_group.html#ga3f7e760214417c7d87541ecb9ab5bea5">nats.h</a>
 </li>
+<li>natsOptions_SetUserInfo()
+: <a class="el" href="group__opts_group.html#ga5b99da7dd74aac3be962f323c3863d9e">nats.h</a>
+</li>
 <li>natsOptions_SetVerbose()
 : <a class="el" href="group__opts_group.html#gaa16bfd09ef318af18c27a0e199681b69">nats.h</a>
+</li>
+<li>natsOptions_SkipServerVerification()
+: <a class="el" href="group__opts_group.html#ga6f804ec44adc299989fe623570679da3">nats.h</a>
+</li>
+<li>natsOptions_UseGlobalMessageDelivery()
+: <a class="el" href="group__opts_group.html#gabf060c92648b50c069f0abe7cbb06f1c">nats.h</a>
+</li>
+<li>natsOptions_UseOldRequestStyle()
+: <a class="el" href="group__opts_group.html#ga70aa85319933d78c0076cc862fa3e5a6">nats.h</a>
 </li>
 <li>natsStatistics_Create()
 : <a class="el" href="group__stats_group.html#gafa923df029168f4991b77ffdd9e24877">nats.h</a>

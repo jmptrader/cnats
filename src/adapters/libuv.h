@@ -1,7 +1,11 @@
-// Copyright 2016 Apcera Inc. All rights reserved.
+// Copyright 2016-2017 Apcera Inc. All rights reserved.
 
 #ifndef LIBUV_H_
 #define LIBUV_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /** \cond
  *
@@ -13,7 +17,7 @@
 #define NATS_LIBUV_INCLUDE
 
 #include <uv.h>
-#include "nats.h"
+#include "../nats.h"
 
 #define NATS_LIBUV_ATTACH   (1)
 #define NATS_LIBUV_READ     (2)
@@ -37,7 +41,7 @@ typedef struct
     uv_poll_t       *handle;
     uv_async_t      *scheduler;
     int             events;
-    int             socket;
+    natsSock        socket;
     uv_mutex_t      *lock;
     natsLibuvEvent  *head;
     natsLibuvEvent  *tail;
@@ -191,7 +195,7 @@ uvAsyncAttach(natsLibuvEvents *nle)
         s = NATS_NO_MEMORY;
 
     if ((s == NATS_OK)
-        && (uv_poll_init_socket(nle->loop, nle->handle, nle->socket) != 0))
+        && (uv_poll_init(nle->loop, nle->handle, nle->socket) != 0))
     {
         s = NATS_ERR;
     }
@@ -316,7 +320,7 @@ uvAsyncCb(uv_async_t *handle)
  * @param socket the socket to start polling on.
  */
 natsStatus
-natsLibuv_Attach(void **userData, void *loop, natsConnection *nc, int socket)
+natsLibuv_Attach(void **userData, void *loop, natsConnection *nc, natsSock socket)
 {
     uv_loop_t       *uvLoop = (uv_loop_t*) loop;
     bool            sched   = false;
@@ -468,5 +472,9 @@ natsLibuv_Detach(void *userData)
 }
 
 /** @} */ // end of libuvFunctions
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LIBUV_H_ */

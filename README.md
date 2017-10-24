@@ -1,11 +1,13 @@
 # NATS - C Client 
 A C client for the [NATS messaging system](https://nats.io).
 
+Go [here](http://nats-io.github.io/cnats) for the online documentation.
+
 This NATS Client implementation is heavily based on the [NATS GO Client](https://github.com/nats-io/nats). There is support for Mac OS/X, Linux and Windows (although we don't have specific platform support matrix).
 
-[![License MIT](https://img.shields.io/npm/l/express.svg)](http://opensource.org/licenses/MIT)
+[![License MIT](https://img.shields.io/badge/License-MIT-blue.svg)](http://opensource.org/licenses/MIT)
 [![Build Status](https://travis-ci.org/nats-io/cnats.svg?branch=master)](http://travis-ci.org/nats-io/cnats)
-[![Release](https://img.shields.io/badge/release-v1.3.6-blue.svg?style=flat)](https://github.com/nats-io/cnats/releases/tag/v1.3.6)
+[![Release](https://img.shields.io/badge/release-v1.7.2-blue.svg?style=flat)](https://github.com/nats-io/cnats/releases/tag/v1.7.2)
 [![Documentation](https://img.shields.io/badge/doc-Doxygen-brightgreen.svg?style=flat)](http://nats-io.github.io/cnats)
 
 ## Build
@@ -159,13 +161,20 @@ Go [here](http://nats-io.github.io/cnats) for the online documentation.
 
 The source code is also quite documented.
 
+## Getting Started
+
+The `examples/getstarted` directory has a set of simple examples that are fully functional, yet very simple.
+The goal is to demonstrate how easy to use the API is.
+
+A more complex set of examples are in `examples/` directory and can also be used to benchmark the client library.
+
 ## Basic Usage
 
 Note that for simplicity, error checking is not performed here.
 ```c
-natsConnection 		*nc  = NULL;
-natsSubscription 	*sub = NULL;
-natsMsg				*msg = NULL;
+natsConnection      *nc  = NULL;
+natsSubscription    *sub = NULL;
+natsMsg             *msg = NULL;
 
 // Connects to the default NATS Server running locally
 natsConnection_ConnectTo(&nc, NATS_DEFAULT_URL);
@@ -188,7 +197,7 @@ natsConnection_Publish(nc, "foo", (const void*) data, 5);
 natsConnection_Subscribe(&sub, nc, "foo", onMsg, NULL);
 
 // Simple synchronous subscriber
-natsConnection_SubscribeSync(&nc, nc, "foo");
+natsConnection_SubscribeSync(&sub, nc, "foo");
 
 // Using a synchronous subscriber, gets the first message available, waiting
 // up to 1000 milliseconds (1 second)
@@ -228,13 +237,13 @@ natsConnection_Destroy(nc);
 void
 onMsg(natsConnection *nc, natsSubscription *sub, natsMsg *msg, void *closure)
 {
-	// Prints the message, using the message getters:    
-	printf("Received msg: %s - %.*s\n",
-            natsMsg_GetSubject(msg),
-            natsMsg_GetDataLength(msg),
-            natsMsg_GetData(msg));
+    // Prints the message, using the message getters:
+    printf("Received msg: %s - %.*s\n",
+        natsMsg_GetSubject(msg),
+        natsMsg_GetDataLength(msg),
+        natsMsg_GetData(msg));
 
-	// Don't forget to destroy the message!
+    // Don't forget to destroy the message!
     natsMsg_Destroy(msg);
 }
 ```
@@ -286,7 +295,7 @@ natsConnection_PublishString(nc, "foo.bar.baz", "got it?");
 All subscriptions with the same queue name will form a queue group. Each message will be delivered to only one subscriber per queue group, using queue sematics. You can have as many queue groups as you wish. Normal subscribers will continue to work as expected.
 
 ```c
-ncConnection_QueueSubscribe(&sub, nc, "foo", "job_workers", onMsg, NULL);
+natsConnection_QueueSubscribe(&sub, nc, "foo", "job_workers", onMsg, NULL);
 ```
 
 ## TLS
@@ -298,6 +307,31 @@ An SSL/TLS connection is configured through the use of `natsOptions`. Depending 
 Even with full security (client verifying server certificate, and server requiring client certificates), the setup involves only a few calls.
 
 ```c
+// Here is the minimum to create a TLS/SSL connection:
+
+// Create an options object.
+natsOptions_Create(&opts);
+
+// Set the secure flag.
+natsOptions_SetSecure(opts, true);
+
+// You may not need this, but suppose that the server certificate
+// is self-signed and you would normally provide the root CA, but
+// don't want to. You can disable the server certificate verification
+// like this:
+natsOptions_SkipServerVerification(opts, true);
+
+// Connect now...
+natsConnection_Connect(&nc, opts);
+
+// That's it! On success you will have a secure connection with the server!
+
+(...)
+
+// This example shows what it takes to have a full SSL configuration,
+// including server expected's hostname, root CA, client certificates
+// and specific ciphers to use.
+
 // Create an options object.
 natsOptions_Create(&opts);
 
@@ -338,11 +372,11 @@ printf("All clear!\n");
 // Same as above but with a timeout value, expressed in milliseconds.
 s = natsConnection_FlushTimeout(nc, 1000);
 if (s == NATS_OK)
-	printf("All clear!\n");
+    printf("All clear!\n");
 else if (s == NATS_TIMEOUT)
     printf("Flushed timed out!\n");
 else
-	printf("Error during flush: %d - %s\n", s, natsStatus_GetText(s));
+    printf("Error during flush: %d - %s\n", s, natsStatus_GetText(s));
 ```    
 
 Auto-unsubscribe allows a subscription to be automatically removed when the subscriber has received a given number of messages. This is used internally by the `natsConnection_Request()` call.
@@ -395,10 +429,10 @@ natsOptions_Destroy(nc);
 As we have seen, all callbacks have a `void *closure` parameter. This is useful when the callback needs to perform some work and need a reference to some object. When setting up the callback, you can specify a pointer to that object.
 ```c
 // Our object definition
-typdedef struct __Errors
+typedef struct __Errors
 {
-	int count;
-    
+    int count;
+
 } Errors;
 
 (...)
@@ -406,28 +440,28 @@ typdedef struct __Errors
 int
 main(int argc, char **argv)
 {
-	// Declare an 'Errors' object on the stack.
-	Errors asyncErrors;
+    // Declare an 'Errors' object on the stack.
+    Errors asyncErrors;
 
-	// Initialize this object
-	memset(&asyncErrors, 0, sizeof(asyncErrors);
-    
+    // Initialize this object
+    memset(&asyncErrors, 0, sizeof(asyncErrors);
+
     // Create a natsOptions object.
     (...)
-    
+
     // Set the error callback, and pass the address of our Errors object.
-    natsOptions_SetErrorHandler(opts, asyncCb, (void*) &errors);
-    
+    natsOptions_SetErrorHandler(opts, asyncCb, (void*) &asyncErrors);
+
     // Create the connection and subscriber.
     (...)
     
     // Say that we are done subscribing, we could check the number of errors:
     if (asyncErrors.count > 1000)
     {
-    	printf("That's a lot of errors!\n");
-	}
-    
-	(...)
+        printf("That's a lot of errors!\n");
+    }
+
+    (...)
 }
 ``` 
 
@@ -436,29 +470,20 @@ The callback would use the closure this way:
 static void
 asyncCb(natsConnection *nc, natsSubscription *sub, natsStatus err, void *closure)
 {
-	Errors *errors = (Errors*) closure;
-    
+    Errors *errors = (Errors*) closure;
+
     printf("Async error: %d - %s\n", err, natsStatus_GetText(err));
-    
+
     errors->count++;
 }
 ```
 This is the same for all other callbacks used in the C NATS library.
 
-Usually, delivey of messages is somehow delayed in favor of a better throughput. However, there are cases where the introduction of this delay will be detrimental to performance, for instance with the request-reply pattern. To counter this, you can use the following API:
-```c
-natsSubscription_NoDelay(natsSubscription *sub);
-```
-This will instruct the library to notify the delivery thread (for async subscribers) or the `natSubscription_NextMsg()` call (for sync subscribers) immediately when a message is available.
-
-Check `examples/replier.c` for a demonstration of the usage of this call.
-
-
 ## Clustered Usage
 
 ```c
 static char *servers[] = { "nats://localhost:1222",
-						   "nats://localhost:1223",
+                           "nats://localhost:1223",
                            "nats://localhost:1224"};
                            
 // Setup options to include all servers in the cluster.
@@ -468,7 +493,7 @@ natsOptions_SetServers(opts, servers, 3);
 
 // We could also set the amount to sleep between each reconnect attempt (expressed in
 // milliseconds), and the number of reconnect attempts.
-natsOptions_SetMaxReconnects(opts, 5);
+natsOptions_SetMaxReconnect(opts, 5);
 natsOptions_SetReconnectWait(opts, 2000);
 
 // We could also disable the randomization of the server pool
@@ -485,10 +510,10 @@ static void
 reconnectedCb(natsConnection *nc, void *closure)
 {
     // Define a buffer to receive the url
-	char buffer[64];
-    
+    char buffer[64];
+
     buffer[0] = '\0';
-    
+
     natsConnection_GetConnectedUrl(nc, buffer, sizeof(buffer));
     printf("Got reconnected to: %s\n", buffer);
 }
@@ -554,7 +579,7 @@ See examples in the `examples` directory for complete usage.
 
 (The MIT License)
 
-Copyright (c) 2015 Apcera Inc.
+Copyright (c) 2015-2017 Apcera Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to

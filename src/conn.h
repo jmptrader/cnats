@@ -1,9 +1,11 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 #ifndef CONN_H_
 #define CONN_H_
 
 #include "natsp.h"
+
+#define RESP_INFO_POOL_MAX_SIZE (10)
 
 #ifdef DEV_MODE
 // For type safety
@@ -61,12 +63,33 @@ natsConn_processPong(natsConnection *nc);
 natsStatus
 natsConn_subscribe(natsSubscription **newSub,
                    natsConnection *nc, const char *subj, const char *queue,
-                   natsMsgHandler cb, void *cbClosure, bool noDelay);
+                   int64_t timeout, natsMsgHandler cb, void *cbClosure);
 
 natsStatus
 natsConn_unsubscribe(natsConnection *nc, natsSubscription *sub, int max);
 
 void
-natsConn_removeSubscription(natsConnection *nc, natsSubscription *sub, bool needsLock);
+natsConn_removeSubscription(natsConnection *nc, natsSubscription *sub);
+
+void
+natsConn_processAsyncINFO(natsConnection *nc, char *buf, int len);
+
+natsStatus
+natsConn_addRespInfo(respInfo **newResp, natsConnection *nc, char *respInbox, int respInboxSize);
+
+void
+natsConn_disposeRespInfo(natsConnection *nc, respInfo *resp, bool needsLock);
+
+natsStatus
+natsConn_createRespMux(natsConnection *nc, char *ginbox, natsMsgHandler cb);
+
+natsStatus
+natsConn_waitForRespMux(natsConnection *nc);
+
+natsStatus
+natsConn_initResp(natsConnection *nc, char *ginbox, int ginboxSize);
+
+void
+natsConn_destroyRespPool(natsConnection *nc);
 
 #endif /* CONN_H_ */

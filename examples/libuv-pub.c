@@ -1,6 +1,6 @@
 // Copyright 2016 Apcera Inc. All rights reserved.
 
-#include "../adapters/libuv.h"
+#include "adapters/libuv.h"
 #include "examples.h"
 
 static const char *usage = ""\
@@ -29,6 +29,10 @@ pubThread(void *arg)
     natsConnection_Close(info->conn);
 
     info->status = s;
+
+    // Since this is a user-thread, call this function to release
+    // possible thread-local memory allocated by the library.
+    nats_ReleaseThreadMemory();
 }
 
 int main(int argc, char **argv)

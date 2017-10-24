@@ -1,8 +1,9 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
 #include "examples.h"
 
 static const char *usage = "" \
+"-gd            use global message delivery thread pool\n" \
 "-name          queue name (default is 'worker')\n" \
 "-count         number of expected messages\n";
 
@@ -110,6 +111,7 @@ int main(int argc, char **argv)
 
     if (s == NATS_OK)
     {
+        printStats(STATS_IN|STATS_COUNT,conn, sub, stats);
         printPerf("Received", total, start, elapsed);
     }
     else

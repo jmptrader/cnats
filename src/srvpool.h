@@ -1,15 +1,17 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 #ifndef SRVPOOL_H_
 #define SRVPOOL_H_
 
 #include "status.h"
+#include "hash.h"
 
 // Tracks individual backend servers.
 typedef struct __natsSrv
 {
     natsUrl     *url;
     bool        didConnect;
+    bool        isImplicit;
     int         reconnects;
     int64_t     lastAttempt;
 
@@ -18,7 +20,9 @@ typedef struct __natsSrv
 typedef struct __natsSrvPool
 {
     natsSrv     **srvrs;
+    natsStrHash *urls;
     int         size;
+    int         cap;
 
 } natsSrvPool;
 
@@ -49,6 +53,15 @@ natsSrvPool_GetCurrentServer(natsSrvPool *pool, const natsUrl *url, int *index);
 // as number of reconnect attempts under MaxReconnect.
 natsSrv*
 natsSrvPool_GetNextServer(natsSrvPool *pool, struct __natsOptions *opts, const natsUrl *ncUrl);
+
+// Go through the list of the given URLs and add them to the pool if not already
+// present. If `doShuffle` is true, shuffles the pool if new URLs were added.
+natsStatus
+natsSrvPool_addNewURLs(natsSrvPool *pool, char **urls, int urlCount, bool doShuffle, bool *added);
+
+// Returns an array of servers (as a copy). User is responsible to free the memory.
+natsStatus
+natsSrvPool_GetServers(natsSrvPool *pool, bool implicitOnly, char ***servers, int *count);
 
 // Destroy the pool, freeing up all memory used.
 void

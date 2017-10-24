@@ -1,3 +1,7 @@
+if(NOT NATS_BUILD_EXAMPLES)
+  return()
+endif()
+
 # We need this directory to build the examples
 include_directories(${PROJECT_SOURCE_DIR}/src)
 include_directories(${PROJECT_SOURCE_DIR}/examples)
@@ -13,13 +17,19 @@ endif()
 if(WIN32)
   set(LIB_SUFFIX ${CMAKE_STATIC_LIBRARY_SUFFIX})
 else()
-  set(LIB_SUFFIX ${CMAKE_SHARED_LIBRARY_SUFFIX})
+  if(NATS_BUILD_STATIC_EXAMPLES)
+    set(LIB_SUFFIX ${CMAKE_STATIC_LIBRARY_SUFFIX})
+  else()
+    set(LIB_SUFFIX ${CMAKE_SHARED_LIBRARY_SUFFIX})
+  endif()
 endif()
 
 # Get all the .c files in the examples directory
 file(GLOB EXAMPLES_SOURCES RELATIVE ${PROJECT_SOURCE_DIR}/examples *.c)
 
-add_definitions(-Dnats_IMPORTS)
+if(NOT NATS_BUILD_STATIC_EXAMPLES)
+  add_definitions(-Dnats_IMPORTS)
+endif()
 
 # For each file...
 foreach(examples_src ${EXAMPLES_SOURCES})
@@ -39,7 +49,11 @@ foreach(examples_src ${EXAMPLES_SOURCES})
     elseif(examplename MATCHES "libevent")
       if(NATS_BUILD_LIBEVENT_EXAMPLE)
         set(buildExample ON)
-        set(NATS_ASYNC_IO_LIB ${LIBEVENT_DIR}/lib/libevent${LIB_SUFFIX})
+        if(WIN32)
+          set(NATS_ASYNC_IO_LIB ${LIBEVENT_DIR}/lib/event${LIB_SUFFIX})
+        else()
+          set(NATS_ASYNC_IO_LIB ${LIBEVENT_DIR}/lib/libevent${LIB_SUFFIX} ${LIBEVENT_DIR}/lib/libevent_pthreads${LIB_SUFFIX})
+        endif()
       endif()
     else()
       set(buildExample ON)
@@ -49,8 +63,12 @@ foreach(examples_src ${EXAMPLES_SOURCES})
       # Build the executable
       add_executable(${exampleexe} ${PROJECT_SOURCE_DIR}/examples/${examples_src})
 
-      # Link dynamically
-      target_link_libraries(${exampleexe} nats ${NATS_EXTRA_LIB} ${NATS_ASYNC_IO_LIB})
+      # Link
+      if(NATS_BUILD_STATIC_EXAMPLES)
+        target_link_libraries(${exampleexe} nats_static ${NATS_EXTRA_LIB} ${NATS_ASYNC_IO_LIB})
+      else()
+        target_link_libraries(${exampleexe} nats ${NATS_EXTRA_LIB} ${NATS_ASYNC_IO_LIB})
+      endif()
     endif()
 
 endforeach()

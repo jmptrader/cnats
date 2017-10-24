@@ -89,38 +89,10 @@ natsSock_DestroyFDSet(fd_set *fdSet)
     NATS_FREE(fdSet);
 }
 
-natsStatus
-natsSock_WaitReady(bool forWrite, natsSockCtx *ctx)
-{
-    struct timeval  *timeout = NULL;
-    int             res;
-    fd_set          *fdSet = ctx->fdSet;
-    natsSock        sock = ctx->fd;
-    natsDeadline    *deadline = &(ctx->deadline);
-
-    FD_ZERO(fdSet);
-    FD_SET(sock, fdSet);
-
-    if (deadline != NULL)
-        timeout = natsDeadline_GetTimeout(deadline);
-
-    res = select((int) (sock + 1),
-                 (forWrite ? NULL : fdSet),
-                 (forWrite ? fdSet : NULL),
-                 NULL,
-                 timeout);
-
-    if (res == NATS_SOCK_ERROR)
-        return nats_setError(NATS_IO_ERROR, "select error: %d", res);
-
-    if ((res == 0) || !FD_ISSET(sock, fdSet))
-        return nats_setDefaultError(NATS_TIMEOUT);
-
-    return NATS_OK;
-}
+#define MAX_HOST_NAME   (256)
 
 natsStatus
-natsSock_ConnectTcp(natsSockCtx *ctx, const char *host, int port)
+natsSock_ConnectTcp(natsSockCtx *ctx, const char *phost, int port)
 {
     natsStatus      s    = NATS_OK;
     int             res;
@@ -130,86 +102,113 @@ natsSock_ConnectTcp(natsSockCtx *ctx, const char *host, int port)
     struct addrinfo *p;
     bool            waitForConnect = false;
     bool            error = false;
+    int             i;
+    int             max = 2;
+    char            hosta[MAX_HOST_NAME];
+    int             hostLen;
+    char            *host;
 
-    if (host == NULL)
+    if (phost == NULL)
         return nats_setError(NATS_ADDRESS_MISSING, "%s", "No host specified");
+
+    hostLen = (int) strlen(phost);
+    if ((hostLen == 0) || ((hostLen == 1) && phost[0] == '['))
+        return nats_setError(NATS_INVALID_ARG, "Invalid host name: %s", phost);
+
+    if (phost[0] == '[')
+    {
+        snprintf(hosta, sizeof(hosta), "%.*s", hostLen - 2, phost + 1);
+        host = (char*) hosta;
+    }
+    else
+        host = (char*) phost;
 
     snprintf(sport, sizeof(sport), "%d", port);
 
-    memset(&hints,0,sizeof(hints));
+    if ((ctx->orderIP == 4) || (ctx->orderIP == 6))
+        max = 1;
 
-    hints.ai_family = AF_INET6;
-    hints.ai_socktype = SOCK_STREAM;
-
-    // Start with IPv6, if it fails, try IPv4.
-    // TODO: Should this be some kind of option that would dictate the order?
-    //       This would be beneficial performance wise.
-    if ((res = getaddrinfo(host, sport, &hints, &servinfo)) != 0)
+    for (i=0; i<max; i++)
     {
-         hints.ai_family = AF_INET;
+        memset(&hints,0,sizeof(hints));
+        hints.ai_socktype = SOCK_STREAM;
 
-         if ((res = getaddrinfo(host, sport, &hints, &servinfo)) != 0)
-         {
-             s = nats_setError(NATS_SYS_ERROR, "getaddrinfo error: %s",
-                               gai_strerror(res));
-         }
-    }
-    for (p = servinfo; (s == NATS_OK) && (p != NULL); p = p->ai_next)
-    {
-        ctx->fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-        if (ctx->fd == NATS_SOCK_INVALID)
-            continue;
-
-        error = false;
-
-        s = natsSock_SetBlocking(ctx->fd, false);
-        if (s != NATS_OK)
-            break;
-
-        res = connect(ctx->fd, p->ai_addr, (natsSockLen) p->ai_addrlen);
-        if ((res == NATS_SOCK_ERROR)
-            && (NATS_SOCK_GET_ERROR != NATS_SOCK_CONNECT_IN_PROGRESS))
+        switch (ctx->orderIP)
         {
-            error = true;
-        }
-        else if (res == NATS_SOCK_ERROR)
-        {
-            waitForConnect = true;
+            case  4: hints.ai_family = AF_INET; break;
+            case  6: hints.ai_family = AF_INET6; break;
+            case 46: hints.ai_family = (i == 0 ? AF_INET : AF_INET6); break;
+            case 64: hints.ai_family = (i == 0 ? AF_INET6 : AF_INET); break;
+            default: hints.ai_family = AF_UNSPEC;
         }
 
-        if (!error)
+        s = NATS_OK;
+        if ((res = getaddrinfo(host, sport, &hints, &servinfo)) != 0)
         {
-            if (waitForConnect
-                && ((natsSock_WaitReady(true, ctx) != NATS_OK)
-                    || !natsSock_IsConnected(ctx->fd)))
+            s = nats_setError(NATS_SYS_ERROR, "getaddrinfo error: %s",
+                              gai_strerror(res));
+        }
+        for (p = servinfo; (s == NATS_OK) && (p != NULL); p = p->ai_next)
+        {
+            ctx->fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+            if (ctx->fd == NATS_SOCK_INVALID)
+                continue;
+
+            error = false;
+
+            s = natsSock_SetBlocking(ctx->fd, false);
+            if (s != NATS_OK)
+                break;
+
+            res = connect(ctx->fd, p->ai_addr, (natsSockLen) p->ai_addrlen);
+            if ((res == NATS_SOCK_ERROR)
+                && (NATS_SOCK_GET_ERROR == NATS_SOCK_CONNECT_IN_PROGRESS))
+            {
+                if ((natsSock_WaitReady(WAIT_FOR_CONNECT, ctx) != NATS_OK)
+                    || !natsSock_IsConnected(ctx->fd))
+                {
+                    error = true;
+                }
+            }
+            else if (res == NATS_SOCK_ERROR)
             {
                 error = true;
             }
+
+            if (error)
+            {
+                _closeFd(ctx->fd);
+                ctx->fd = NATS_SOCK_INVALID;
+                continue;
+            }
+
+            s = natsSock_SetCommonTcpOptions(ctx->fd);
+            if (s == NATS_OK)
+                break;
         }
 
-        if (error)
+        if (s == NATS_OK)
+        {
+            if (ctx->fd == NATS_SOCK_INVALID)
+                s = nats_setDefaultError(NATS_NO_SERVER);
+        }
+
+        freeaddrinfo(servinfo);
+        servinfo = NULL;
+
+        if (s == NATS_OK)
+        {
+            // Clear the error stack in case we got errors in the loop until
+            // being able to successfully connect.
+            nats_clearLastError();
+            break;
+        }
+        else
         {
             _closeFd(ctx->fd);
             ctx->fd = NATS_SOCK_INVALID;
-            continue;
         }
-
-        s = natsSock_SetCommonTcpOptions(ctx->fd);
     }
-
-    if (s == NATS_OK)
-    {
-        if (ctx->fd == NATS_SOCK_INVALID)
-            s = nats_setDefaultError(NATS_NO_SERVER);
-    }
-
-    if (s != NATS_OK)
-    {
-        _closeFd(ctx->fd);
-        ctx->fd = NATS_SOCK_INVALID;
-    }
-
-    freeaddrinfo(servinfo);
 
     return NATS_UPDATE_ERR_STACK(s);
 }
@@ -354,7 +353,7 @@ natsSock_Read(natsSockCtx *ctx, char *buffer, size_t maxBufferSize, int *n)
 
             // For non-blocking sockets, if the read would block, we need to
             // wait up to the deadline.
-            s = natsSock_WaitReady(false, ctx);
+            s = natsSock_WaitReady(WAIT_FOR_READ, ctx);
             if (s != NATS_OK)
                 return NATS_UPDATE_ERR_STACK(s);
 
@@ -429,7 +428,7 @@ natsSock_Write(natsSockCtx *ctx, const char *data, int len, int *n)
 
             // For non-blocking sockets, if the write would block, we need to
             // wait up to the deadline.
-            s = natsSock_WaitReady(true, ctx);
+            s = natsSock_WaitReady(WAIT_FOR_WRITE, ctx);
             if (s != NATS_OK)
                 return NATS_UPDATE_ERR_STACK(s);
 

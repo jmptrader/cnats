@@ -1,14 +1,18 @@
-// Copyright 2016 Apcera Inc. All rights reserved.
+// Copyright 2016-2017 Apcera Inc. All rights reserved.
 
 #ifndef LIBEVENT_H_
 #define LIBEVENT_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /** \cond
  *
  */
 #include <event.h>
 #include <event2/thread.h>
-#include "nats.h"
+#include "../nats.h"
 
 typedef struct
 {
@@ -50,7 +54,7 @@ natsLibevent_Init(void)
 }
 
 static void
-natsLibevent_ProcessEvent(int fd, short event, void *arg)
+natsLibevent_ProcessEvent(evutil_socket_t fd, short event, void *arg)
 {
     natsLibeventEvents *nle = (natsLibeventEvents*) arg;
 
@@ -80,7 +84,7 @@ keepAliveCb(evutil_socket_t fd, short flags, void * arg)
  * @param socket the socket to start polling on.
  */
 natsStatus
-natsLibevent_Attach(void **userData, void *loop, natsConnection *nc, int socket)
+natsLibevent_Attach(void **userData, void *loop, natsConnection *nc, natsSock socket)
 {
     struct event_base   *libeventLoop = (struct event_base*) loop;
     natsLibeventEvents  *nle          = (natsLibeventEvents*) (*userData);
@@ -216,5 +220,9 @@ natsLibevent_Detach(void *userData)
 }
 
 /** @} */ // end of libeventFunctions
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LIBEVENT_H_ */

@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 #ifndef NATSP_H_
 #define NATSP_H_
@@ -65,6 +65,8 @@
 #define _UNSUB_NO_MAX_PROTO_ "UNSUB %" PRId64 " \r\n"
 
 #define STALE_CONNECTION     "Stale Connection"
+#define PERMISSIONS_ERR      "Permissions Violation"
+#define AUTHORIZATION_ERR    "Authorization Violation"
 
 #define _CRLF_LEN_          (2)
 #define _SPC_LEN_           (1)
@@ -78,6 +80,15 @@
 
 static const char *inboxPrefix = "_INBOX.";
 #define NATS_INBOX_PRE_LEN (7)
+
+#define NATS_REQ_ID_OFFSET  (NATS_INBOX_PRE_LEN + NUID_BUFFER_LEN + 1)
+#define NATS_MAX_REQ_ID_LEN (19) // to display 2^63 number
+
+#define WAIT_FOR_READ       (0)
+#define WAIT_FOR_WRITE      (1)
+#define WAIT_FOR_CONNECT    (2)
+
+#define MAX_FRAMES (50)
 
 extern int64_t gLockSpinCount;
 
@@ -99,6 +110,8 @@ typedef struct __natsServerInfo
     bool        authRequired;
     bool        tlsRequired;
     int64_t     maxPayload;
+    char        **connectURLs;
+    int         connectURLsCount;
 
 } natsServerInfo;
 
@@ -108,6 +121,7 @@ typedef struct __natsSSLCtx
     int         refs;
     SSL_CTX     *ctx;
     char        *expectedHostname;
+    bool        skipVerify;
 
 } natsSSLCtx;
 
@@ -142,6 +156,10 @@ struct __natsOptions
     int64_t                 reconnectWait;
     int                     reconnectBufSize;
 
+    char                    *user;
+    char                    *password;
+    char                    *token;
+
     natsConnectionHandler   closedCb;
     void                    *closedCbClosure;
 
@@ -150,6 +168,9 @@ struct __natsOptions
 
     natsConnectionHandler   reconnectedCb;
     void                    *reconnectedCbClosure;
+
+    natsConnectionHandler   discoveredServersCb;
+    void                    *discoveredServersClosure;
 
     natsErrHandler          asyncErrCb;
     void                    *asyncErrCbClosure;
@@ -163,6 +184,17 @@ struct __natsOptions
     void                    *evLoop;
     natsEvLoopCallbacks     evCbs;
 
+    bool                    libMsgDelivery;
+
+    int                     orderIP; // possible values: 0,4,6,46,64
+
+    // forces the old method of Requests that utilize
+    // a new Inbox and a new Subscription for each request
+    bool                    useOldRequestStyle;
+
+    // If set to true, the Publish call will flush in place and
+    // not rely on the flusher.
+    bool                    sendAsap;
 };
 
 typedef struct __natsMsgList
@@ -173,6 +205,17 @@ typedef struct __natsMsgList
     int         bytes;
 
 } natsMsgList;
+
+typedef struct __natsMsgDlvWorker
+{
+    natsMutex       *lock;
+    natsCondition   *cond;
+    natsThread      *thread;
+    bool            inWait;
+    bool            shutdown;
+    natsMsgList     msgList;
+
+} natsMsgDlvWorker;
 
 struct __natsSubscription
 {
@@ -196,27 +239,8 @@ struct __natsSubscription
     // True if msgList.count is over pendingMax
     bool                        slowConsumer;
 
-    // If 'true', the connection will notify the deliveryThread when a
-    // message arrives (if the delivery thread is in wait).
-    bool                        noDelay;
-
     // Condition variable used to wait for message delivery.
     natsCondition               *cond;
-
-    // When 'noDelay' is false, a timer is used to check for the need
-    // to notify the deliveryMsg thread.
-    natsTimer                   *signalTimer;
-
-    // Interval of the above timer.
-    int64_t                     signalTimerInterval;
-
-    // Indicates the number of time the signal timer failed to try to
-    // acquire the lock (after which it will call Lock()).
-    int                         signalFailCount;
-
-    // Temporarily voids the use of the signalTimer when the message list
-    // count reaches a certain threshold.
-    int                         signalLimit;
 
     // This is > 0 when the delivery thread (or NextMsg) goes into a
     // condition wait.
@@ -247,9 +271,18 @@ struct __natsSubscription
     // Delivery thread (for async subscription).
     natsThread                  *deliverMsgsThread;
 
+    // If message delivery is done by the library instead, this is the
+    // reference to the worker handling this subscription.
+    natsMsgDlvWorker            *libDlvWorker;
+
     // Message callback and closure (for async subscription).
     natsMsgHandler              msgCb;
     void                        *msgCbClosure;
+
+    int64_t                     timeout;
+    natsTimer                   *timeoutTimer;
+    bool                        timedOut;
+    bool                        timeoutSuspended;
 
     // Pending limits, etc..
     int                         msgsMax;
@@ -293,6 +326,9 @@ typedef struct __natsSockCtx
     // then we will use two different fd sets, and also probably pass deadlines
     // individually as opposed to use one at the connection level.
     fd_set          *fdSet;
+#ifdef _WIN32
+    fd_set          *errSet;
+#endif
     natsDeadline    deadline;
 
     SSL             *ssl;
@@ -300,7 +336,20 @@ typedef struct __natsSockCtx
     // This is true when we are using an external event loop (such as libuv).
     bool            useEventLoop;
 
+    int             orderIP; // possible values: 0,4,6,46,64
+
 } natsSockCtx;
+
+typedef struct __respInfo
+{
+    natsMutex           *mu;
+    natsCondition       *cond;
+    natsMsg             *msg;
+    bool                closed;
+    bool                removed;
+    bool                pooled;
+
+} respInfo;
 
 struct __natsConnection
 {
@@ -324,8 +373,10 @@ struct __natsConnection
 
     int64_t             ssid;
     natsHash            *subs;
+    natsMutex           *subsMu;
 
     natsConnStatus      status;
+    bool                initc; // true if the connection is performing the initial connect
     natsStatus          err;
     char                errStr[256];
 
@@ -345,6 +396,18 @@ struct __natsConnection
     natsThread          *reconnectThread;
 
     natsStatistics      stats;
+
+    // New Request style
+    char                respId[NATS_MAX_REQ_ID_LEN+1];
+    int                 respIdPos;
+    int                 respIdVal;
+    char                *respSub;   // The wildcard subject
+    natsSubscription    *respMux;   // A single response subscription
+    natsCondition       *respReady; // For race when initializing the wildcard subscription
+    natsStrHash         *respMap;   // Request map for the response msg
+    respInfo            **respPool;
+    int                 respPoolSize;
+    int                 respPoolIdx;
 
     struct
     {
@@ -394,6 +457,21 @@ nats_sslInit(void);
 
 natsStatus
 natsInbox_init(char *inbox, int inboxLen);
+
+natsStatus
+natsLib_msgDeliveryPostControlMsg(natsSubscription *sub);
+
+natsStatus
+natsLib_msgDeliveryAssignWorker(natsSubscription *sub);
+
+bool
+natsLib_isLibHandlingMsgDeliveryByDefault(void);
+
+void
+natsLib_getMsgDeliveryPoolInfo(int *maxSize, int *size, int *idx, natsMsgDlvWorker ***workersArray);
+
+natsLocale
+natsLib_getLocale(void);
 
 //
 // Threads

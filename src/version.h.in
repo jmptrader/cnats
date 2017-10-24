@@ -1,6 +1,6 @@
 /*
  * DO NOT EDIT! Generated during make process.
- * Copyright 2015 Apcera Inc. All rights reserved.
+ * Copyright 2015-2017 Apcera Inc. All rights reserved.
  */
 
 #ifndef VERSION_H_
@@ -20,7 +20,7 @@ extern "C" {
                              (NATS_VERSION_MINOR <<  8) | \
                              NATS_VERSION_PATCH)
                              
-#define NATS_VERSION_REQUIRED_NUMBER @NATS_VERSION_REQUIRED_NUMBER@                             
+#define NATS_VERSION_REQUIRED_NUMBER @NATS_VERSION_REQUIRED_NUMBER@
 
 #ifdef __cplusplus
 }

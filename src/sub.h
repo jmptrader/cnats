@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 #ifndef SUB_H_
 #define SUB_H_
@@ -26,8 +26,10 @@ natsSub_release(natsSubscription *sub);
 
 natsStatus
 natsSub_create(natsSubscription **newSub, natsConnection *nc, const char *subj,
-               const char *queueGroup, natsMsgHandler cb, void *cbClosure,
-               bool noDelay);
+               const char *queueGroup, int64_t timeout, natsMsgHandler cb, void *cbClosure);
+
+void
+natsSub_setMax(natsSubscription *sub, uint64_t max);
 
 void
 natsSub_close(natsSubscription *sub, bool connectionClosed);

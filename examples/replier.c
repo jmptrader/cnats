@@ -1,16 +1,15 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
 #include "examples.h"
 
 static const char *usage = "" \
+"-gd            use global message delivery thread pool\n" \
 "-sync          receive synchronously (default is asynchronous)\n" \
 "-count         number of expected requests\n";
 
 static void
 onMsg(natsConnection *nc, natsSubscription *sub, natsMsg *msg, void *closure)
 {
-    natsStatus s;
-
     if (print)
         printf("Received msg: %s - %.*s\n",
                natsMsg_GetSubject(msg),
@@ -20,10 +19,8 @@ onMsg(natsConnection *nc, natsSubscription *sub, natsMsg *msg, void *closure)
     if (start == 0)
         start = nats_Now();
 
-    s = natsConnection_PublishString(nc, natsMsg_GetReply(msg),
-                                     "here's some help");
-    if (s == NATS_OK)
-        s = natsConnection_Flush(nc);
+    natsConnection_PublishString(nc, natsMsg_GetReply(msg),
+                                 "here's some help");
 
     // We should be using a mutex to protect those variables since
     // they are used from the subscription's delivery and the main
@@ -58,6 +55,11 @@ int main(int argc, char **argv)
            (async ? "a" : ""), subj);
 
     s = natsOptions_SetErrorHandler(opts, asyncCb, NULL);
+    // Since the replier is sending one message at a time, reduce
+    // latency by making Publish calls send data right away
+    // instead of buffering them.
+    if (s == NATS_OK)
+        s = natsOptions_SetSendAsap(opts, true);
 
     if (s == NATS_OK)
         s = natsConnection_Connect(&conn, opts);
@@ -74,8 +76,6 @@ int main(int argc, char **argv)
     if (s == NATS_OK)
         s = natsSubscription_SetPendingLimits(sub, -1, -1);
 
-    if (s == NATS_OK)
-        s = natsSubscription_NoDeliveryDelay(sub);
     if (s == NATS_OK)
         s = natsSubscription_AutoUnsubscribe(sub, (int) total);
 
@@ -107,8 +107,6 @@ int main(int argc, char **argv)
                                                  natsMsg_GetReply(msg),
                                                  "here's some help");
             if (s == NATS_OK)
-                s = natsConnection_Flush(conn);
-            if (s == NATS_OK)
             {
                 if (start == 0)
                     start = nats_Now();
@@ -129,6 +127,7 @@ int main(int argc, char **argv)
 
     if (s == NATS_OK)
     {
+        printStats(STATS_IN|STATS_COUNT,conn, sub, stats);
         printPerf("Received", count, start, elapsed);
     }
     else

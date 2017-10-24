@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 #include "natsp.h"
 
@@ -81,8 +81,11 @@ natsMsg_create(natsMsg **newMsg,
 
     bufSize  = subjLen;
     bufSize += 1;
-    bufSize += replyLen;
-    bufSize += 1;
+    if (replyLen > 0)
+    {
+        bufSize += replyLen;
+        bufSize += 1;
+    }
     bufSize += bufLen;
     bufSize += 1;
 
@@ -99,6 +102,7 @@ natsMsg_create(natsMsg **newMsg,
     // about updating this initialization code.
     memset(&(msg->gc), 0, sizeof(natsGCItem));
 
+    msg->sub  = NULL;
     msg->next = NULL;
 
     ptr = (char*) (((char*) &(msg->next)) + sizeof(msg->next));
@@ -108,13 +112,20 @@ natsMsg_create(natsMsg **newMsg,
     ptr += subjLen;
     *(ptr++) = '\0';
 
-    msg->reply = (const char*) ptr;
     if (replyLen > 0)
     {
-        memcpy(ptr, reply, replyLen);
-        ptr += replyLen;
+        msg->reply = (const char*) ptr;
+        if (replyLen > 0)
+        {
+            memcpy(ptr, reply, replyLen);
+            ptr += replyLen;
+        }
+        *(ptr++) = '\0';
     }
-    *(ptr++) = '\0';
+    else
+    {
+        msg->reply = NULL;
+    }
 
     msg->data    = (const char*) ptr;
     msg->dataLen = bufLen;

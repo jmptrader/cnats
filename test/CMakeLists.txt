@@ -1,3 +1,7 @@
+if(NOT BUILD_TESTING)
+  return()
+endif()  
+
 # We need this to build the test program
 include_directories(${PROJECT_SOURCE_DIR}/src)
 if(NATS_BUILD_WITH_TLS)

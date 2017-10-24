@@ -9,15 +9,14 @@ include(CTest)
 # Uncomment to have the executable moved to 'build' instead of their respective 'build/xxx' directories
 #set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 
-set(NATS_INSTALL_PREFIX ../install CACHE PATH "Install prefix")
-set(CMAKE_INSTALL_PREFIX ${NATS_INSTALL_PREFIX} CACHE INTERNAL "")
-
 option(NATS_UPDATE_VERSION "Update the version file" OFF)
 option(NATS_COVERAGE "Code coverage" OFF)
 option(NATS_BUILD_WITH_TLS "Build with TLS support" ON)
 option(NATS_BUILD_WITH_TLS_CLIENT_METHOD "Use TLS_client_method()" OFF)
-option(NATS_BUILD_LIBUV_EXAMPLE "Compile libuv example" OFF)
-option(NATS_BUILD_LIBEVENT_EXAMPLE "Compile libevent example" OFF)
+option(NATS_BUILD_EXAMPLES "Build examples" ON)
+option(NATS_BUILD_LIBUV_EXAMPLE "Build libuv examples" OFF)
+option(NATS_BUILD_LIBEVENT_EXAMPLE "Build libevent examples" OFF)
+option(NATS_BUILD_STATIC_EXAMPLES "Statically link examples" OFF)
 
 if(NATS_BUILD_WITH_TLS)
 find_package(OpenSSL REQUIRED)
@@ -76,6 +75,7 @@ if(UNIX)
   endif(${NATS_BUILD_ARCH} MATCHES "32")
   
 elseif(WIN32)
+  set(NATS_EXTRA_LIB "Ws2_32")
   set(NATS_OS "_WIN32")
   set(NATS_PLATFORM_INCLUDE "win") 
 endif(UNIX)
@@ -95,8 +95,11 @@ endif(NATS_BUILD_WITH_TLS)
 # Add to the 'clean' target the list (and location) of files to remove
 
 list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/include/nats.h")
-list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/include/status.h")
-list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/include/version.h")
+list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/include/nats/nats.h")
+list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/include/nats/status.h")
+list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/include/nats/version.h")
+list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/include/nats/adapters/libevent.h")
+list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/include/nats/adapters/libuv.h")
 list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/lib/${nats}")
 list(APPEND NATS_INSTALLED_FILES "${CMAKE_INSTALL_PREFIX}/lib/${nats_static}")
 
@@ -108,8 +111,8 @@ if(NATS_UPDATE_VERSION)
 # Versionning
 
 set(NATS_VERSION_MAJOR  1)
-set(NATS_VERSION_MINOR  3)
-set(NATS_VERSION_PATCH  6)
+set(NATS_VERSION_MINOR  7)
+set(NATS_VERSION_PATCH  3)
 set(NATS_VERSION_SUFFIX "")
 
 set(NATS_VERSION_REQUIRED_NUMBER 0x010100)
@@ -131,6 +134,8 @@ endif()
 
 add_subdirectory(src)
 add_subdirectory(examples)
+add_subdirectory(examples/getstarted)
 add_subdirectory(test)
+add_subdirectory(test/dylib)
 #----------------------------
 
