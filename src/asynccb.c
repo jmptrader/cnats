@@ -1,20 +1,41 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2024 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "natsp.h"
 #include "mem.h"
 #include "conn.h"
+#include "sub.h"
+#if defined(NATS_HAS_STREAMING)
+#include "stan/conn.h"
+#endif
+#include "glib/glib.h"
 
 static void
 _freeAsyncCbInfo(natsAsyncCbInfo *info)
 {
+    NATS_FREE(info->errTxt);
     NATS_FREE(info);
 }
 
 static void
-_createAndPostCb(natsAsyncCbType type, natsConnection *nc, natsSubscription *sub, natsStatus err)
+_createAndPostCb(natsAsyncCbType type, natsConnection *nc, natsSubscription *sub, natsStatus err,
+                 char *errTxt, void* scPtr)
 {
     natsStatus          s  = NATS_OK;
     natsAsyncCbInfo     *cb;
+#if defined(NATS_HAS_STREAMING)
+    stanConnection      *sc = (stanConnection*) scPtr;
+#endif
 
     cb = NATS_CALLOC(1, sizeof(natsAsyncCbInfo));
     if (cb == NULL)
@@ -27,8 +48,14 @@ _createAndPostCb(natsAsyncCbType type, natsConnection *nc, natsSubscription *sub
     cb->type = type;
     cb->nc   = nc;
     cb->sub  = sub;
-    cb->err  = err;
-
+    if (sub != NULL)
+        natsSub_retain(sub);
+    cb->err     = err;
+    cb->errTxt  = errTxt;
+#if defined(NATS_HAS_STREAMING)
+    cb->sc   = sc;
+    stanConn_retain(sc);
+#endif
     natsConn_retain(nc);
 
     s = nats_postAsyncCbInfo(cb);
@@ -42,25 +69,45 @@ _createAndPostCb(natsAsyncCbType type, natsConnection *nc, natsSubscription *sub
 void
 natsAsyncCb_PostConnHandler(natsConnection *nc, natsAsyncCbType type)
 {
-    _createAndPostCb(type, nc, NULL, NATS_OK);
+    _createAndPostCb(type, nc, NULL, NATS_OK, NULL, NULL);
 }
 
 void
-natsAsyncCb_PostErrHandler(natsConnection *nc, natsSubscription *sub, natsStatus err)
+natsAsyncCb_PostErrHandler(natsConnection *nc, natsSubscription *sub, natsStatus err, char *errTxt)
 {
-    _createAndPostCb(ASYNC_ERROR, nc, sub, err);
+    _createAndPostCb(ASYNC_ERROR, nc, sub, err, errTxt, NULL);
 }
+
+#if defined(NATS_HAS_STREAMING)
+void
+natsAsyncCb_PostStanConnLostHandler(stanConnection *sc)
+{
+    _createAndPostCb(ASYNC_STAN_CONN_LOST, NULL, NULL, NATS_CONNECTION_CLOSED, NULL, (void*) sc);
+}
+#endif
 
 void
 natsAsyncCb_Destroy(natsAsyncCbInfo *info)
 {
-    natsConnection *nc;
+    natsConnection      *nc  = NULL;
+    natsSubscription    *sub = NULL;
+#if defined(NATS_HAS_STREAMING)
+    stanConnection      *sc  = NULL;
+#endif
 
     if (info == NULL)
         return;
 
-    nc = info->nc;
+    nc  = info->nc;
+    sub = info->sub;
+#if defined(NATS_HAS_STREAMING)
+    sc  = info->sc;
+#endif
 
     _freeAsyncCbInfo(info);
+    natsSub_release(sub);
     natsConn_release(nc);
+#if defined(NATS_HAS_STREAMING)
+    stanConn_release(sc);
+#endif
 }

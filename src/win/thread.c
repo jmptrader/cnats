@@ -1,10 +1,22 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2024 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "../natsp.h"
 
 #include <process.h>
 
 #include "../mem.h"
+#include "../glib/glib.h"
 
 static BOOL CALLBACK
 _initHandleFunction(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *lpContext)
@@ -44,11 +56,14 @@ static unsigned __stdcall _threadStart(void* arg)
 {
   struct threadCtx *c = (struct threadCtx*) arg;
 
+  nats_setNATSThreadKey();
+
   c->entry(c->arg);
 
   NATS_FREE(c);
 
   nats_ReleaseThreadMemory();
+  natsLib_Release();
 
   return 0;
 }
@@ -60,6 +75,7 @@ natsThread_Create(natsThread **thread, natsThreadCb cb, void *arg)
     natsThread          *t   = NULL;
     natsStatus          s    = NATS_OK;
 
+    natsLib_Retain();
     ctx = (struct threadCtx*) NATS_CALLOC(1, sizeof(*ctx));
     t = (natsThread*) NATS_CALLOC(1, sizeof(natsThread));
 
@@ -87,6 +103,7 @@ natsThread_Create(natsThread **thread, natsThreadCb cb, void *arg)
     {
         NATS_FREE(ctx);
         NATS_FREE(t);
+        natsLib_Release();
     }
 
     return s;

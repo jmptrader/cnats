@@ -1,4 +1,15 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2021 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 
 #ifndef HASH_H_
@@ -82,6 +93,9 @@ natsHash_Get(natsHash *hash, int64_t key);
 void*
 natsHash_Remove(natsHash *hash, int64_t key);
 
+natsStatus
+natsHash_RemoveSingle(natsHash *hash, int64_t *key, void **data);
+
 void
 natsHash_Destroy(natsHash *hash);
 
@@ -109,15 +123,22 @@ natsStrHash_Create(natsStrHash **newHash, int initialSize);
 uint32_t
 natsStrHash_Hash(const char *data, int dataLen);
 
+#define natsStrHash_Set(h, k, c, d, o) natsStrHash_SetEx((h), (k), (c), ((c) ? true : false), (d), (o))
+
 natsStatus
-natsStrHash_Set(natsStrHash *hash, char *key, bool copyKey,
-                void *data, void **oldData);
+natsStrHash_SetEx(natsStrHash *hash, char *key, bool copyKey, bool freeKey,
+                  void *data, void **oldData);
+
+#define natsStrHash_Get(h, k) natsStrHash_GetEx((h), (k), (int) strlen(k))
 
 void*
-natsStrHash_Get(natsStrHash *hash, char *key);
+natsStrHash_GetEx(natsStrHash *hash, char *key, int keyLen);
 
 void*
 natsStrHash_Remove(natsStrHash *hash, char *key);
+
+natsStatus
+natsStrHash_RemoveSingle(natsStrHash *hash, char **key, void **data);
 
 void
 natsStrHash_Destroy(natsStrHash *hash);

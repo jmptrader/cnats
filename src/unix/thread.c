@@ -1,7 +1,19 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2024 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "../natsp.h"
 #include "../mem.h"
+#include "../glib/glib.h"
 
 bool
 nats_InitOnce(natsInitOnceType *control, natsInitOnceCb cb)
@@ -23,11 +35,14 @@ _threadStart(void *arg)
 {
     struct threadCtx *c = (struct threadCtx*) arg;
 
+    nats_setNATSThreadKey();
+
     c->entry(c->arg);
 
     NATS_FREE(c);
 
     nats_ReleaseThreadMemory();
+    natsLib_Release();
 
     return NULL;
 }
@@ -40,6 +55,7 @@ natsThread_Create(natsThread **thread, natsThreadCb cb, void *arg)
     natsStatus          s    = NATS_OK;
     int                 err;
 
+    natsLib_Retain();
     ctx = (struct threadCtx*) NATS_CALLOC(1, sizeof(*ctx));
     t = (natsThread*) NATS_CALLOC(1, sizeof(natsThread));
 
@@ -65,6 +81,7 @@ natsThread_Create(natsThread **thread, natsThreadCb cb, void *arg)
     {
         NATS_FREE(ctx);
         NATS_FREE(t);
+        natsLib_Release();
     }
 
     return s;
@@ -148,9 +165,12 @@ natsThreadLocal_SetEx(natsThreadLocal tl, const void *value, bool setErr)
 
     if ((ret = pthread_setspecific(tl, value)) != 0)
     {
-        return nats_setError(NATS_SYS_ERROR,
-                             "pthread_setspecific: %d",
-                             ret);
+        if (setErr)
+            return nats_setError(NATS_SYS_ERROR,
+                                 "pthread_setspecific: %d",
+                                 ret);
+        else
+            return NATS_SYS_ERROR;
     }
 
     return NATS_OK;

@@ -1,6 +1,6 @@
 var searchData=
 [
-  ['tail',['tail',['../structnats_libuv_events.html#a1fb89e626f351738e4e986f33d229dc2',1,'natsLibuvEvents']]],
-  ['type',['type',['../struct____nats_libuv_event.html#a0e9a7d1a9d9e53938957e31fc600ab70',1,'__natsLibuvEvent']]],
-  ['types',['Types',['../group__types_group.html',1,'']]]
+  ['questions_0',['Frequently Asked Questions',['../index.html#faq_sec',1,'']]],
+  ['queue_1',['Queue',['../structjs_sub_options.html#aaf4b620d112a31f51a20389c5405805d',1,'jsSubOptions']]],
+  ['queuegroup_2',['queuegroup',['../structmicro__endpoint__config__s.html#abf08a87593d4b7c3d1be7b7392f7fd67',1,'micro_endpoint_config_s::QueueGroup'],['../structmicro__endpoint__info__s.html#ad07fba572478157b89a193ede7297d89',1,'micro_endpoint_info_s::QueueGroup'],['../structmicro__endpoint__stats__s.html#a8172de70eeaec314af5728214d9cc230',1,'micro_endpoint_stats_s::QueueGroup'],['../structmicro__group__config__s.html#a8a59fe960d1a8958807aa0bbc62be033',1,'micro_group_config_s::QueueGroup'],['../structmicro__service__config__s.html#abdd93c544c7c368ae4793c4c479afc61',1,'micro_service_config_s::QueueGroup']]]
 ];

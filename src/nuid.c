@@ -1,4 +1,15 @@
-// Copyright 2016 Apcera Inc. All rights reserved.
+// Copyright 2016-2021 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "natsp.h"
 
@@ -65,7 +76,7 @@ _rand64(int64_t maxValue)
 {
     int64_t v;
 
-    v  = ((int64_t) _randCMWC() << 32);
+    v  = ((uint64_t) _randCMWC() << 32);
     v |= (int64_t) _randCMWC();
 
     if (v < 0)
@@ -74,6 +85,12 @@ _rand64(int64_t maxValue)
     v = v % maxValue;
 
     return v;
+}
+
+int64_t
+nats_Rand64(void)
+{
+    return _rand64(0x7FFFFFFFFFFFFFFF);
 }
 
 // A unique identifier generator that is high performance, very fast, and entropy pool friendly.
@@ -191,7 +208,7 @@ natsNUID_init(void)
     natsStatus      s;
     unsigned int    seed = (unsigned int) nats_NowInNanoSeconds();
 
-    memset(&globalNUID, 0, sizeof(natsNUID));
+    memset(&globalNUID, 0, sizeof(natsLockedNUID));
 
     srand(seed);
     _initCMWC(seed);
@@ -216,7 +233,7 @@ _nextNUID(natsNUID *nuid, char *buffer, int bufferLen)
 
     // Check bufferLen is big enough
     if (bufferLen <= totalLen)
-        return NATS_INSUFFICIENT_BUFFER;
+        return nats_setError(NATS_INSUFFICIENT_BUFFER, "Buffer should be at least %d bytes, it is only %d bytes", totalLen, bufferLen);
 
     // Increment and capture.
     nuid->seq += nuid->inc;

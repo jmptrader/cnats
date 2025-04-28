@@ -1,4 +1,15 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2018 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <string.h>
 #include <assert.h>
@@ -102,14 +113,13 @@ natsBuf_Reset(natsBuffer *buf)
 }
 
 void
-natsBuf_RewindTo(natsBuffer *buf, int newPosition)
+natsBuf_MoveTo(natsBuffer *buf, int newPosition)
 {
-    assert(newPosition < buf->capacity);
+    assert(newPosition <= buf->capacity);
 
     buf->len = newPosition;
     buf->pos = buf->data + newPosition;
 }
-
 
 natsStatus
 natsBuf_Expand(natsBuffer *buf, int newSize)
@@ -151,27 +161,32 @@ natsStatus
 natsBuf_Append(natsBuffer *buf, const char* data, int dataLen)
 {
     natsStatus  s = NATS_OK;
-    int         n = buf->len + dataLen;
+    int64_t     n;
 
-    // We could use int64_t and check for 0x7FFFFFFF, but keeping
-    // all int is faster.
-    if (n < 0)
+    if (dataLen == -1)
+        dataLen = (int) strlen(data);
+    if (dataLen == 0)
+        return NATS_OK; // nothing to do
+
+    n = (int64_t) buf->len + dataLen;
+
+    if ((n < 0) || (n >= 0x7FFFFFFF))
         return nats_setDefaultError(NATS_NO_MEMORY);
 
-    if (n > buf->capacity)
+    if (n > (int64_t) buf->capacity)
     {
         // Increase by 10%
-        int extra = (int) (n * 0.1);
-        int newSize;
+        int64_t extra = (int64_t) (n * 0.1);
+        int64_t newSize;
 
         // Make sure that we have at least some bytes left after adding.
         newSize = (n + (extra < 64 ? 64 : extra));
 
         // Overrun.
-        if (newSize < 0)
+        if (newSize >= 0x7FFFFFFF)
             return nats_setDefaultError(NATS_NO_MEMORY);
 
-        s = natsBuf_Expand(buf, newSize);
+        s = natsBuf_Expand(buf, (int) newSize);
     }
 
     if (s == NATS_OK)

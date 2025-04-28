@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['library',['Library',['../group__library_group.html',1,'']]]
+  ['inboxes_0',['Inboxes',['../group__inbox_group.html',1,'']]]
 ];

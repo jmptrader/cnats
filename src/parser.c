@@ -1,4 +1,15 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2020 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <string.h>
 #include <stdio.h>
@@ -58,7 +69,6 @@ _cloneMsgArg(natsConnection *nc)
                                         replyLen);
             if (s == NATS_OK)
                 nc->ps->ma.reply = &(nc->ps->ma.replyRec);
-
         }
     }
 
@@ -75,48 +85,69 @@ static natsStatus
 _processMsgArgs(natsConnection *nc, char *buf, int bufLen)
 {
     natsStatus      s       = NATS_OK;
-    bool            started = false;
-    char            *start  = buf;
-    int             len     = 0;
+    int             start   = -1;
     int             index   = 0;
     int             i;
     char            b;
-    struct slice    slices[4];
+    struct slice    slices[5];
+    char            errTxt[256];
+    int             indexLimit = 3;
+    int             minArgs    = 3;
+    int             maxArgs    = 4;
+    bool            hasHeaders = (nc->ps->hdr >= 0 ? true : false);
+
+    // If headers, the content should be:
+    // <subject> <sid> [reply] <hdr size> <overall size>
+    // otherwise:
+    // <subject> <sid> [reply] <overall size>
+    if (hasHeaders)
+    {
+        indexLimit = 4;
+        minArgs    = 4;
+        maxArgs    = 5;
+    }
 
     for (i = 0; i < bufLen; i++)
     {
         b = buf[i];
 
-        if (((b == ' ') || (b == '\t') || (b == '\r') || (b == '\n'))
-            && started)
+        if (((b == ' ') || (b == '\t') || (b == '\r') || (b == '\n')))
         {
-            slices[index].start = start;
-            slices[index].len   = len;
-            index++;
-
-            started = false;
-            len = 0;
+            if (start >=0)
+            {
+                if (index > indexLimit)
+                {
+                    s = NATS_PROTOCOL_ERROR;
+                    break;
+                }
+                slices[index].start = buf + start;
+                slices[index].len   = i - start;
+                index++;
+                start = -1;
+            }
+        }
+        else if (start < 0)
+        {
+            start = i;
+        }
+    }
+    if ((s == NATS_OK) && (start >= 0))
+    {
+        if (index > indexLimit)
+        {
+            s = NATS_PROTOCOL_ERROR;
         }
         else
         {
-            if (!started)
-            {
-                start   = buf + i;
-                started = true;
-            }
-            len++;
+            slices[index].start = buf + start;
+            slices[index].len   = i - start;
+            index++;
         }
     }
-    if (started)
+    if ((s == NATS_OK) && ((index == minArgs) || (index == maxArgs)))
     {
-        slices[index].start = start;
-        slices[index].len   = len;
-        index++;
-    }
-
-    if ((index == 3) || (index == 4))
-    {
-        int maSizeIndex = 2;
+        int maSizeIndex  = index-1; // position of size is always last.
+        int hdrSizeIndex = index-2; // position of hdr size is always before last.
 
         s = natsBuf_InitWithBackend(&(nc->ps->ma.subjectRec),
                                     slices[0].start,
@@ -128,7 +159,7 @@ _processMsgArgs(natsConnection *nc, char *buf, int bufLen)
 
             nc->ps->ma.sid   = nats_ParseInt64(slices[1].start, slices[1].len);
 
-            if (index == 3)
+            if (index == minArgs)
             {
                 nc->ps->ma.reply = NULL;
             }
@@ -141,31 +172,50 @@ _processMsgArgs(natsConnection *nc, char *buf, int bufLen)
                 if (s == NATS_OK)
                 {
                     nc->ps->ma.reply = &(nc->ps->ma.replyRec);
-                    maSizeIndex = 3;
                 }
             }
         }
         if (s == NATS_OK)
+        {
+            if (hasHeaders)
+            {
+                nc->ps->ma.hdr = (int) nats_ParseInt64(slices[hdrSizeIndex].start,
+                                                       slices[hdrSizeIndex].len);
+            }
             nc->ps->ma.size = (int) nats_ParseInt64(slices[maSizeIndex].start,
                                                     slices[maSizeIndex].len);
+        }
     }
     else
     {
-        snprintf(nc->errStr, sizeof(nc->errStr), "processMsgArgs Parse Error: '%.*s'",
-                 bufLen, buf);
+        snprintf(errTxt, sizeof(errTxt), "%s", "processMsgArgs Parse Error: wrong number of arguments");
         s = NATS_PROTOCOL_ERROR;
     }
     if (nc->ps->ma.sid < 0)
     {
-        snprintf(nc->errStr, sizeof(nc->errStr), "processMsgArgs Bad or Missing Sid: '%.*s'",
+        snprintf(errTxt, sizeof(errTxt), "processMsgArgs Bad or Missing Sid: '%.*s'",
                  bufLen, buf);
         s = NATS_PROTOCOL_ERROR;
     }
     if (nc->ps->ma.size < 0)
     {
-        snprintf(nc->errStr, sizeof(nc->errStr), "processMsgArgs Bad or Missing Size: '%.*s'",
+        snprintf(errTxt, sizeof(errTxt), "processMsgArgs Bad or Missing Size: '%.*s'",
                  bufLen, buf);
         s = NATS_PROTOCOL_ERROR;
+    }
+    if (hasHeaders && ((nc->ps->ma.hdr < 0) || (nc->ps->ma.hdr > nc->ps->ma.size)))
+    {
+        snprintf(errTxt, sizeof(errTxt), "processMsgArgs Bad or Missing Header Size: '%.*s'",
+                 bufLen, buf);
+        s = NATS_PROTOCOL_ERROR;
+    }
+
+    if (s != NATS_OK)
+    {
+        natsConn_Lock(nc);
+        snprintf(nc->errStr, sizeof(nc->errStr), "%s", errTxt);
+        nc->err = s;
+        natsConn_Unlock(nc);
     }
 
     return s;
@@ -191,7 +241,15 @@ natsParser_Parse(natsConnection *nc, char* buf, int bufLen)
                 {
                     case 'M':
                     case 'm':
-                        nc->ps->state = OP_M;
+                        nc->ps->state  = OP_M;
+                        nc->ps->hdr    = -1;
+                        nc->ps->ma.hdr = -1;
+                        break;
+                    case 'H':
+                    case 'h':
+                        nc->ps->state  = OP_H;
+                        nc->ps->hdr    = 0;
+                        nc->ps->ma.hdr = 0;
                         break;
                     case 'P':
                     case 'p':
@@ -206,6 +264,19 @@ natsParser_Parse(natsConnection *nc, char* buf, int bufLen)
                     case 'I':
                     case 'i':
                         nc->ps->state = OP_I;
+                        break;
+                    default:
+                        goto parseErr;
+                }
+                break;
+            }
+            case OP_H:
+            {
+                switch (b)
+                {
+                    case 'M':
+                    case 'm':
+                        nc->ps->state = OP_M;
                         break;
                     default:
                         goto parseErr;
@@ -688,7 +759,7 @@ natsParser_Parse(natsConnection *nc, char* buf, int bufLen)
                 switch (b)
                 {
                     case ' ':
-                    case 't':
+                    case '\t':
                         continue;
                     default:
                         nc->ps->state = INFO_ARG;
@@ -831,7 +902,7 @@ parseErr:
     natsMutex_Lock(nc->mu);
 
     snprintf(nc->errStr, sizeof(nc->errStr),
-             "Parse Error [%d]: '%.*s'",
+             "Parse Error [%u]: '%.*s'",
              nc->ps->state,
              bufLen - i,
              buf + i);

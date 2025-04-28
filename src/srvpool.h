@@ -1,4 +1,15 @@
-// Copyright 2015-2017 Apcera Inc. All rights reserved.
+// Copyright 2015-2019 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef SRVPOOL_H_
 #define SRVPOOL_H_
@@ -13,7 +24,8 @@ typedef struct __natsSrv
     bool        didConnect;
     bool        isImplicit;
     int         reconnects;
-    int64_t     lastAttempt;
+    char        *tlsName;
+    int         lastAuthErrCode;
 
 } natsSrv;
 
@@ -23,6 +35,9 @@ typedef struct __natsSrvPool
     natsStrHash *urls;
     int         size;
     int         cap;
+    bool        randomize;
+    char        *user;
+    char        *pwd;
 
 } natsSrvPool;
 
@@ -32,7 +47,6 @@ struct __natsOptions;
 
 #define natsSrvPool_GetSize(p)              ((p)->size)
 #define natsSrvPool_GetSrv(p,i)             ((p)->srvrs[(i)])
-#define natsSrvPool_GetSrvUrl(p,i)          (natsSrvPool_GetSrv((p),(i))->url)
 #define natsSrvPool_SetSrvDidConnect(p,i,c) (natsSrvPool_GetSrv((p),(i))->didConnect=(c))
 #define natsSrvPool_SetSrvReconnects(p,i,r) (natsSrvPool_GetSrv((p),(i))->reconnects=(r))
 
@@ -43,21 +57,20 @@ struct __natsOptions;
 natsStatus
 natsSrvPool_Create(natsSrvPool **newPool, struct __natsOptions *opts);
 
-// Return the server from the pool that has the given 'url'. If the 'index'
-// pointer is not NULL, will place at this location the index of the returned
-// server in the pool.
+// Return the server corresponding to given `cur` with current position
+// in the pool.
 natsSrv*
-natsSrvPool_GetCurrentServer(natsSrvPool *pool, const natsUrl *url, int *index);
+natsSrvPool_GetCurrentServer(natsSrvPool *pool, const natsSrv *cur, int *index);
 
 // Pop the current server and put onto the end of the list. Select head of list as long
 // as number of reconnect attempts under MaxReconnect.
 natsSrv*
-natsSrvPool_GetNextServer(natsSrvPool *pool, struct __natsOptions *opts, const natsUrl *ncUrl);
+natsSrvPool_GetNextServer(natsSrvPool *pool, struct __natsOptions *opts, const natsSrv *cur);
 
 // Go through the list of the given URLs and add them to the pool if not already
-// present. If `doShuffle` is true, shuffles the pool if new URLs were added.
+// present.
 natsStatus
-natsSrvPool_addNewURLs(natsSrvPool *pool, char **urls, int urlCount, bool doShuffle, bool *added);
+natsSrvPool_addNewURLs(natsSrvPool *pool, const natsUrl *curUrl, char **urls, int urlCount, const char *tlsName, bool *added);
 
 // Returns an array of servers (as a copy). User is responsible to free the memory.
 natsStatus

@@ -1,4 +1,15 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2021 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "natsp.h"
 
@@ -191,6 +202,17 @@ natsHash_Get(natsHash *hash, int64_t key)
     return NULL;
 }
 
+static void
+_maybeShrink(natsHash *hash)
+{
+    if (hash->canResize
+        && (hash->numBkts > _BSZ)
+        && (hash->used < hash->numBkts / 4))
+    {
+        _shrink(hash);
+    }
+}
+
 void*
 natsHash_Remove(natsHash *hash, int64_t key)
 {
@@ -213,12 +235,7 @@ natsHash_Remove(natsHash *hash, int64_t key)
             hash->used--;
 
             // Check for resizing
-            if (hash->canResize
-                && (hash->numBkts > _BSZ)
-                && (hash->used < hash->numBkts / 4))
-            {
-                _shrink(hash);
-            }
+            _maybeShrink(hash);
 
             break;
         }
@@ -227,6 +244,38 @@ natsHash_Remove(natsHash *hash, int64_t key)
     }
 
     return dataRemoved;
+}
+
+natsStatus
+natsHash_RemoveSingle(natsHash *hash, int64_t *key, void **data)
+{
+    natsHashEntry   *e = NULL;
+    int             i;
+
+    if (hash->used != 1)
+        return nats_setDefaultError(NATS_ERR);
+
+    for (i=0; i<hash->numBkts; i++)
+    {
+        e = hash->bkts[i];
+        if (e != NULL)
+        {
+            if (key != NULL)
+                *key = e->key;
+            if (data != NULL)
+                *data = e->data;
+            _freeEntry(e);
+
+            hash->used--;
+            hash->bkts[i] = NULL;
+
+            // Check for resizing
+            _maybeShrink(hash);
+
+            break;
+        }
+    }
+    return NATS_OK;
 }
 
 void
@@ -340,29 +389,30 @@ natsStrHash_Hash(const char *data, int dataLen)
     int      dlen   = dataLen;
     uint32_t h32    = (uint32_t)_OFF32;
     uint64_t k1, k2;
+    uint32_t k3;
 
     for (; dlen >= _DDWSZ; dlen -= _DDWSZ)
     {
-        k1  = *(uint64_t*) &(data[i]);
-        k2  = *(uint64_t*) &(data[i + 4]);
+        memcpy(&k1, &(data[i]), sizeof(k1));
+        memcpy(&k2, &(data[i + 4]), sizeof(k2));
         h32 = (uint32_t) ((((uint64_t) h32) ^ ((k1<<5 | k1>>27) ^ k2)) * _YP32);
         i += _DDWSZ;
     }
 
     // Cases: 0,1,2,3,4,5,6,7
-    if ((dlen & _DWSZ) > 0)
+    if ((dlen & _DWSZ) != 0)
     {
-        k1  = *(uint64_t*) &(data[i]);
+        memcpy(&k1, &(data[i]), sizeof(k1));
         h32 = (uint32_t) ((((uint64_t) h32) ^ k1) * _YP32);
         i += _DWSZ;
     }
-    if ((dlen & _WSZ) > 0)
+    if ((dlen & _WSZ) != 0)
     {
-        k1  = *(uint32_t*) &(data[i]);
-        h32 = (uint32_t) ((((uint64_t) h32) ^ k1) * _YP32);
+        memcpy(&k3, &(data[i]), sizeof(k3));
+        h32 = (uint32_t) ((((uint64_t) h32) ^ (uint64_t) k3) * _YP32);
         i += _WSZ;
     }
-    if ((dlen & 1) > 0)
+    if ((dlen & 1) != 0)
     {
         h32 = (h32 ^ (uint32_t)(data[i])) * _YP32;
     }
@@ -468,7 +518,7 @@ _shrinkStr(natsStrHash *hash)
 
 
 static natsStrHashEntry*
-_createStrEntry(uint32_t hk, char *key, bool copyKey, void *data)
+_createStrEntry(uint32_t hk, char *key, bool copyKey, bool freeKey, void *data)
 {
     natsStrHashEntry *e = (natsStrHashEntry*) NATS_MALLOC(sizeof(natsStrHashEntry));
 
@@ -477,7 +527,7 @@ _createStrEntry(uint32_t hk, char *key, bool copyKey, void *data)
 
     e->hk       = hk;
     e->key      = (copyKey ? NATS_STRDUP(key) : key);
-    e->freeKey  = copyKey;
+    e->freeKey  = freeKey;
     e->data     = data;
     e->next     = NULL;
 
@@ -490,9 +540,11 @@ _createStrEntry(uint32_t hk, char *key, bool copyKey, void *data)
     return e;
 }
 
+// Note that it would be invalid to call with copyKey:true and freeKey:false,
+// since this would lead to a memory leak.
 natsStatus
-natsStrHash_Set(natsStrHash *hash, char *key, bool copyKey,
-                void *data, void **oldData)
+natsStrHash_SetEx(natsStrHash *hash, char *key, bool copyKey, bool freeKey,
+                  void *data, void **oldData)
 {
     natsStatus          s         = NATS_OK;
     uint32_t            hk        = 0;
@@ -518,16 +570,32 @@ natsStrHash_Set(natsStrHash *hash, char *key, bool copyKey,
                 *oldData = e->data;
             e->data  = data;
 
+            // Need to care for situations where previous call
+            // for same key hash was with different pointers and or
+            // "config" values (copyKey/freeKey).
+
+            // But if nothing has changed (same pointers and config) we
+            // can bail early.
+            if ((key == e->key) && (freeKey == e->freeKey))
+                return NATS_OK;
+
+            oldKey = e->key;
+            // First try to dup the key if required.
             if (copyKey)
             {
-                oldKey = e->key;
-                e->key = NATS_STRDUP(key);
+                char *newKey = NATS_STRDUP(key);
+                if (newKey == NULL)
+                    return nats_setDefaultError(NATS_NO_MEMORY);
 
-                if (e->freeKey)
-                    NATS_FREE(oldKey);
-
-                e->freeKey = true;
+                e->key = newKey;
             }
+            // If old config say that we had ownership, then free the
+            // old key now.
+            if (e->freeKey)
+                NATS_FREE(oldKey);
+
+            // Keep track of ownership of this key (copied or not).
+            e->freeKey = freeKey;
             return NATS_OK;
         }
 
@@ -535,7 +603,7 @@ natsStrHash_Set(natsStrHash *hash, char *key, bool copyKey,
     }
 
     // We have a new entry here
-    newEntry = _createStrEntry(hk, key, copyKey, data);
+    newEntry = _createStrEntry(hk, key, copyKey, freeKey, data);
     if (newEntry == NULL)
         return nats_setDefaultError(NATS_NO_MEMORY);
 
@@ -551,16 +619,16 @@ natsStrHash_Set(natsStrHash *hash, char *key, bool copyKey,
 }
 
 void*
-natsStrHash_Get(natsStrHash *hash, char *key)
+natsStrHash_GetEx(natsStrHash *hash, char *key, int keyLen)
 {
     natsStrHashEntry    *e;
-    uint32_t            hk = natsStrHash_Hash(key, (int) strlen(key));
+    uint32_t            hk = natsStrHash_Hash(key, keyLen);
 
     e = hash->bkts[hk & hash->mask];
     while (e != NULL)
     {
         if ((e->hk == hk)
-            && (strcmp(e->key, key) == 0))
+            && (strncmp(e->key, key, keyLen) == 0))
         {
             return e->data;
         }
@@ -578,6 +646,17 @@ _freeStrEntry(natsStrHashEntry *e)
         NATS_FREE(e->key);
 
     NATS_FREE(e);
+}
+
+static void
+_maybeShrinkStr(natsStrHash *hash)
+{
+    if (hash->canResize
+        && (hash->numBkts > _BSZ)
+        && (hash->used < hash->numBkts / 4))
+    {
+        _shrinkStr(hash);
+    }
 }
 
 void*
@@ -606,12 +685,7 @@ natsStrHash_Remove(natsStrHash *hash, char *key)
             hash->used--;
 
             // Check for resizing
-            if (hash->canResize
-                && (hash->numBkts > _BSZ)
-                && (hash->used < hash->numBkts / 4))
-            {
-                _shrinkStr(hash);
-            }
+            _maybeShrinkStr(hash);
 
             break;
         }
@@ -620,6 +694,48 @@ natsStrHash_Remove(natsStrHash *hash, char *key)
     }
 
     return dataRemoved;
+}
+
+natsStatus
+natsStrHash_RemoveSingle(natsStrHash *hash, char **key, void **data)
+{
+    natsStrHashEntry    *e = NULL;
+    int                 i;
+
+    if (hash->used != 1)
+        return nats_setDefaultError(NATS_ERR);
+
+    for (i=0; i<hash->numBkts; i++)
+    {
+        e = hash->bkts[i];
+        if (e != NULL)
+        {
+            if (key != NULL)
+            {
+                char *retKey = e->key;
+
+                if (e->freeKey)
+                {
+                    retKey = NATS_STRDUP(e->key);
+                    if (retKey == NULL)
+                        return nats_setDefaultError(NATS_NO_MEMORY);
+                }
+                *key = retKey;
+            }
+            if (data != NULL)
+                *data = e->data;
+            _freeStrEntry(e);
+
+            hash->used--;
+            hash->bkts[i] = NULL;
+
+            // Check for resizing
+            _maybeShrinkStr(hash);
+
+            break;
+        }
+    }
+    return NATS_OK;
 }
 
 void

@@ -1,4 +1,15 @@
-// Copyright 2016-2017 Apcera Inc. All rights reserved.
+// Copyright 2016-2018 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef LIBEVENT_H_
 #define LIBEVENT_H_
@@ -147,12 +158,23 @@ natsLibevent_Attach(void **userData, void *loop, natsConnection *nc, natsSock so
     return s;
 }
 
+static void
+_closeCb(evutil_socket_t fd, short event, void *arg)
+{
+    natsSock socket = (natsSock) fd;
+
+    // We have stopped polling for the "READ" event and are now in the
+    // event loop thread and invoke this so that the NATS C client
+    // library can proceed with the close of the socket/connection.
+    natsConnection_ProcessCloseEvent(&socket);
+}
+
 /** \brief Start or stop polling on READ events.
  *
  * This callback is invoked to notify that the event library should start
  * or stop polling for READ events.
  *
- * @param userData the user object created in #natsLibuv_Attach
+ * @param userData the user object created in #natsLibevent_Attach
  * @param add `true` if the library needs to start polling, `false` otherwise.
  */
 natsStatus
@@ -164,7 +186,16 @@ natsLibevent_Read(void *userData, bool add)
     if (add)
         res = event_add(nle->read, NULL);
     else
-        res = event_del(nle->read);
+    {
+        int socket = event_get_fd(nle->read);
+        res = event_del_noblock(nle->read);
+        if (res == 0)
+        {
+            // This will schedule a one-time event that guarantees that the
+            // callback `_closeCb` will be invoked from the event loop thread.
+            res = event_base_once(nle->loop, socket, EV_TIMEOUT, _closeCb, (void*) nle, NULL);
+        }
+    }
 
     return (res == 0 ? NATS_OK : NATS_ERR);
 }
@@ -174,7 +205,7 @@ natsLibevent_Read(void *userData, bool add)
  * This callback is invoked to notify that the event library should start
  * or stop polling for WRITE events.
  *
- * @param userData the user object created in #natsLibuv_Attach
+ * @param userData the user object created in #natsLibevent_Attach
  * @param add `true` if the library needs to start polling, `false` otherwise.
  */
 natsStatus
@@ -186,7 +217,7 @@ natsLibevent_Write(void *userData, bool add)
     if (add)
         res = event_add(nle->write, NULL);
     else
-        res = event_del(nle->write);
+        res = event_del_noblock(nle->write);
 
     return (res == 0 ? NATS_OK : NATS_ERR);
 }
@@ -197,7 +228,7 @@ natsLibevent_Write(void *userData, bool add)
  * callback will be invoked. This is the opportunity to cleanup the state
  * maintained by the adapter for this connection.
  *
- * @param userData the user object created in #natsLibuv_Attach
+ * @param userData the user object created in #natsLibevent_Attach
  */
 natsStatus
 natsLibevent_Detach(void *userData)

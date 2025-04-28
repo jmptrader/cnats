@@ -3,12 +3,16 @@ Compiled Object files, Static and Dynamic libs (Shared Objects)
 *.a
 *.so
 *.dylib
+*.gcov
 
 # Folders
 build*/
+cmake-build*/
 install/
 html/
 !doc/html/
+test/datastore_*/
+test/conf_*
 
 # Emacs
 *~
@@ -19,6 +23,11 @@ html/
 .cproject
 .project
 .settings/
+
+.vscode/
+.idea/
+.vs/
+out/
 
 # Mac
 .DS_Store

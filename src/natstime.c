@@ -1,4 +1,15 @@
-// Copyright 2015-2017 Apcera Inc. All rights reserved.
+// Copyright 2015-2018 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "natsp.h"
 
@@ -14,7 +25,7 @@ nats_Now(void)
     struct _timeb now;
     _ftime_s(&now);
     return (((int64_t)now.time) * 1000 + now.millitm);
-#elif defined CLOCK_MONOTONIC
+#elif defined CLOCK_REALTIME
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
         abort();
@@ -34,7 +45,7 @@ nats_NowInNanoSeconds(void)
     struct _timeb now;
     _ftime_s(&now);
     return (((int64_t)now.time) * 1000 + now.millitm) * 1000000L;
-#elif defined CLOCK_MONOTONIC
+#elif defined CLOCK_REALTIME
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
         abort();
@@ -47,13 +58,28 @@ nats_NowInNanoSeconds(void)
 #endif
 }
 
+int64_t
+nats_NowMonotonicInNanoSeconds(void)
+{
+    int64_t now = 0;
+#ifdef _WIN32
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER counter;
+    if (QueryPerformanceFrequency(&frequency) && QueryPerformanceCounter(&counter))
+        now = (int64_t)(counter.QuadPart * 1000000000ULL / frequency.QuadPart);
+#elif defined CLOCK_MONOTONIC
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+        now = ((int64_t) ts.tv_sec) * 1000000000L + ((int64_t) ts.tv_nsec);
+#endif
+    return now != 0 ? now : nats_NowInNanoSeconds();
+}
+
 void
 natsDeadline_Init(natsDeadline *deadline, int64_t timeout)
 {
     deadline->active          = true;
-    deadline->absoluteTime    = nats_Now() + timeout;
-    deadline->timeout.tv_sec  = (long) timeout / 1000;
-    deadline->timeout.tv_usec = (timeout % 1000) * 1000;
+    deadline->absoluteTime    = nats_setTargetTime(timeout);
 }
 
 void
@@ -62,18 +88,26 @@ natsDeadline_Clear(natsDeadline *deadline)
     deadline->active = false;
 }
 
-struct timeval*
+int
 natsDeadline_GetTimeout(natsDeadline *deadline)
 {
-    int64_t timeout;
+    int timeout;
 
     if (!(deadline->active))
-        return NULL;
+        return -1;
 
-    timeout = deadline->absoluteTime - nats_Now();
+    timeout = (int) (deadline->absoluteTime - nats_Now());
+    if (timeout < 0)
+        timeout = 0;
 
-    deadline->timeout.tv_sec  = (long) (timeout / 1000);
-    deadline->timeout.tv_usec = (timeout % 1000) * 1000;
+    return timeout;
+}
 
-    return &(deadline->timeout);
+int64_t
+nats_setTargetTime(int64_t timeout)
+{
+    int64_t target = nats_Now() + timeout;
+    if (target < 0)
+        target = 0x7FFFFFFFFFFFFFFF;
+    return target;
 }
